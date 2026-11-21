@@ -26,9 +26,9 @@ declines interfaces, not devices, and every enumerated device keeps its
 control pipe either way -- so a hub costs two channels before carrying
 anything. Host mode is proven at full speed on the ESP32-S3, and at high
 speed on the ESP32-P4 with a webcam on a port that supplies 5 V and on the
-[ESP32-S31](#the-esp32-s31) behind a hub; behind a hub the P4 and S31 reach
-full-speed devices when you start the host with
-`full_speed=True` (see [below](#keyboards-and-midi-controllers-behind-a-hub-on-the-esp32-p4-and-s31)). MSC now mounts as a filesystem, read-write
+[ESP32-S31](#the-esp32-s31) behind a hub; behind a high-speed hub the S31
+reaches full-speed devices at high speed, and the P4 when you start the host
+with `full_speed=True` (see [below](#keyboards-and-midi-controllers-behind-a-hub-on-the-esp32-p4-and-s31)). MSC now mounts as a filesystem, read-write
 ([`examples/usb_host_msc_simpletest.py`](../examples/usb_host_msc_simpletest.py) is the shortest, and [`examples/usb_drive_mount.py`](../examples/usb_drive_mount.py) lists a hosted stick; [`usb_drive_log.py`](../examples/usb_drive_log.py)
 appends sensor lines to one and reads them back after a remount;
 [`usb_drive_read.py`](../examples/usb_drive_read.py) reads a file end to end and checks its SHA-256), with
@@ -72,13 +72,20 @@ A slow stream from a webcam is usually the camera. Most lengthen the exposure in
 ## Keyboards and MIDI controllers behind a hub on the ESP32-P4 and S31
 
 The P4's and the S31's host ports are high speed. Plug a keyboard, a mouse or a MIDI
-controller into it directly and it works. Put it behind a hub and it won't
-enumerate, because a high-speed hub talks to a slower device through a
-transaction translator, which the ESP-IDF host doesn't support. The console
-shows `Connected device is FS, transaction translator (TT) is not supported`.
+controller into it directly and it works. Behind a high-speed hub, it's
+reached through the hub's transaction translator, with split transactions.
 
-Start the host at full speed instead, and the hub runs at full speed too and
-passes those devices straight through:
+On the S31 that just works: the keyboard, a webcam and a drive share one
+high-speed hub, each at its own speed
+([below](#the-esp32-s31)). The S31's build carries split-transaction support
+in its copy of the USB host library, which runs the controller in Buffer DMA
+mode to do it, at a few percent of bulk throughput.
+
+On the P4 the ESP-IDF host has no split transactions, so a full-speed device
+behind a high-speed hub doesn't enumerate, and the console shows `Connected
+device is FS, transaction translator (TT) is not supported`. Start the host at
+full speed instead, and the hub runs at full speed too and passes those
+devices straight through:
 
 ```python
 import usb.core
@@ -86,7 +93,7 @@ import usb.core
 usb.core.start(full_speed=True)
 ```
 
-High-speed devices on the same hub still work, at full-speed bandwidth
+`full_speed=True` works on the S31 too. High-speed devices on the same hub still work, at full-speed bandwidth
 (12 Mbit/s): a webcam negotiates a smaller or more compressed mode, and a
 flash drive copies more slowly. So leave it off when everything on the bus is
 high speed, or when the slow device is plugged straight into the port. It
@@ -128,7 +135,9 @@ check.
 The S31's USB OTG controller is high speed on a UTMI PHY, like the P4's, with
 sixteen host channels and 896 lines of FIFO, so it gets the P4's larger FIFO
 split and `full_speed=True`. On ESP-IDF 6 the host library comes from the
-component registry as `espressif/usb`, which the S31's build pins.
+component registry as `espressif/usb`, which the S31's build pins and patches
+with split transactions, so full- and low-speed devices behind a high-speed hub
+work at high speed.
 
 On the Waveshare ESP32-S31-Touch-LCD-4.3C the host port is the 4-pin header
 J3: GND, D+, D- and the board's 5 V, through 2.2 Ω series resistors. Its
@@ -144,11 +153,19 @@ Behind a powered four-port hub on J3, at full speed (`full_speed=True`):
   were played;
 - another board's CDC serial console answered a REPL round trip.
 
-At high speed the hub, the drive, the camera and the CDC board enumerated at
-high speed, and the keyboard was refused, as a full-speed device behind a
-high-speed hub is (see [above](#keyboards-and-midi-controllers-behind-a-hub-on-the-esp32-p4-and-s31)).
-The drive ran at about 1.2 MB/s write and 7 MB/s read, and the C920e streamed
-640x480 MJPEG at 13.7 frames a second and 1280x720 at 12.6. The hub on J3
+At high speed (`usb.core.start()`), with split transactions, the hub, the
+drive and the camera enumerated at high speed and the MIDI keyboard and an
+ESP32-P4 board's full-speed USB device (CDC serial, MIDI and a keyboard) at
+full speed, all on the same hub:
+
+- the C920e streamed 1280x720 MJPEG for 40 seconds with no packet errors and
+  every frame whole, at 14.9 frames a second (29 with
+  `Camera.hold_frame_rate()`), while the P4 board's 399 MIDI notes and 39 key
+  presses, sent ten a second, arrived; one note was lost when the reading
+  program paused for 358 ms and the sending board's buffer filled;
+- the P4 board's CDC port echoed 20 of 20 round trips in 5 ms (median) and
+  8 KB back at 17 KB/s;
+- the drive read at 5.0 MB/s, against 5.2 MB/s without split transactions. The hub on J3
 changed speed both ways between starts, and the WIFI6 DEV-KIT's check
 doesn't apply to the S31.
 

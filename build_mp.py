@@ -1406,13 +1406,19 @@ def stm32_m4_settle(image, text, pad, pad_at, relink):
 # adds to EXTRA_COMPONENT_DIRS. (A component of the same name in
 # EXTRA_COMPONENT_DIRS isn't enough: the managed copy is still fetched, and
 # ESP-IDF adds it later, so it wins.) Each is name: (chips, manifest key);
-# ESP-IDF names a component after its directory.
+# ESP-IDF names a component after its directory. The USB host library comes
+# from the registry's archive (the usb download line, CircuitPython's too), so
+# its copy is that archive unpacked with patches/usb/ applied on top.
 TINYUSB = "espressif__tinyusb"
 ESP_HOSTED = "espressif__esp_hosted"
+USB_HOST = "espressif__usb"
 COMPONENTS = {
     TINYUSB: (("esp32s2", "esp32s3", "esp32p4"), "espressif/tinyusb"),
     ESP_HOSTED: (("esp32p4",), "espressif/esp_hosted"),
+    USB_HOST: (("esp32s31",), "espressif/usb"),
 }
+# Copies made from a download line rather than a git pin: name: download.
+COMPONENT_DOWNLOADS = {USB_HOST: "usb"}
 
 
 def make_submodules(shell, make, mp):
@@ -1431,6 +1437,8 @@ def component_copy(mp, chip, name):
     chips, key = COMPONENTS[name]
     if chip not in chips:
         return None
+    if name in COMPONENT_DOWNLOADS:
+        return download_copy(mp, name, key)
     p = pin(name)
     url, ref = p.url, p.tag or p.ref
     short = name.partition("__")[2]
@@ -1475,6 +1483,45 @@ def component_copy(mp, chip, name):
         run(["git", "-C", str(dest), "add", "-A"])
         run(["git", "-C", str(dest), "-c", "user.name=pydevices", "-c", "user.email=pydevices@local",
              "commit", "-q", "-m", mark, "-m", sid])
+    return dest
+
+
+def download_copy(mp, name, key):
+    """deps/<name>: the registry archive of a download line, unpacked, with
+    patches/<short name>/ applied as one local commit on top of the archive's
+    own files, so a changed series is put on a clean copy."""
+    source = ensure_dep(COMPONENT_DOWNLOADS[name], None)
+    version = dep_version(COMPONENT_DOWNLOADS[name], source)
+    manifest = (mp / "ports" / "esp32" / "main" / "idf_component.yml").read_text()
+    block = re.search(rf"^  {re.escape(key)}:\n((?:    .*\n|\s*\n)+)", manifest, re.M)
+    asked = re.search(r"^\s+version:\s*\"?([^\s\"]+)", block.group(1), re.M) if block else None
+    if not asked or asked.group(1) != version:
+        die(f"the port builds {key} {asked.group(1) if asked else '?'}, but {pins.LOCK} downloads {version}: move them together")
+    short = name.partition("__")[2]
+    patches = sorted((REPO / "patches" / short).glob("*.patch"))
+    digest = hashlib.sha256()
+    for patch in patches:
+        digest.update(patch.read_bytes())
+    sid = "Patch-Series: " + digest.hexdigest()[:16]
+    mark = f"PyDevices patches applied to {key} {version} (a local record, never pushed)"
+    dest = DEPS / name
+    if dest.exists():
+        head = git_out(dest, "log", "-1", "--format=%s%n%b").splitlines()
+        if head[:1] == [mark] and sid in head and not git_out(dest, "status", "--porcelain"):
+            return dest
+        shutil.rmtree(dest)
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
+    git = ["git", "-C", str(dest), "-c", "user.name=pydevices", "-c", "user.email=pydevices@local"]
+    run(["git", "init", "-q", str(dest)])
+    run(["git", "-C", str(dest), "config", "core.autocrlf", "false"])
+    run(git + ["add", "-A"])
+    run(git + ["commit", "-q", "-m", f"{key} {version}, as the registry ships it"])
+    for patch in patches:
+        if subprocess.run(["git", "-C", str(dest), "apply", str(patch)]).returncode != 0:
+            die(f"{patch.relative_to(REPO)} does not apply to {key} {version}")
+        say(f"applied {patch.relative_to(REPO)}")
+    run(git + ["add", "-A"])
+    run(git + ["commit", "-q", "--allow-empty", "-m", mark, "-m", sid])
     return dest
 
 
