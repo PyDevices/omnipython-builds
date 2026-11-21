@@ -26,15 +26,42 @@ periodic scheduler.
 
 A halt never abandons a split whose start split the translator took: the
 translator has already answered the device, so its data exists only there.
-The complete split runs first, and a bulk transfer that has moved bytes when
-the halt lands completes short with them instead of being canceled. A bulk
-or control complete split that sees a transaction error is asked again, as
-the translator keeps the result until it is collected.
+The complete split runs first, also for a bulk or control complete split
+still waiting for its microframe when the halt is asked for, and a bulk
+transfer that has moved bytes when the halt lands completes short with them
+instead of being canceled. A bulk or control complete split that sees a
+transaction error is asked again, as the translator keeps the result until
+it is collected.
 
-Not done: Clear_TT_Buffer after a failed split to a translator's bulk or
-control endpoint, isochronous OUT splits of more than 188 bytes
-(multiple start splits), and the bandwidth budgeting of the translator's
-full-speed frame.
+A bulk or control split that fails with transaction errors can leave its
+transaction in the translator's buffer. The HCD then owes the translator a
+Clear_TT_Buffer request (USB 2.0, 11.24.2.3): it queues the request on the
+port and tells the hub driver through the port callback, and the hub driver
+sends it on the translator's hub's control pipe from its own task, one at a
+time, as Linux does.
+
+A bulk or control complete split answered NYET is asked again in the next
+microframe, from the SOF interrupt, rather than at once: asking at once was
+only answered NYET again, and cost an interrupt each time.
+
+Isochronous splits run one packet per frame. An OUT packet goes to the
+translator as start splits of up to 188 bytes in consecutive microframes
+(BEGIN, MID..., END, or ALL when it fits in one). An IN packet is asked for
+with one start split, and complete splits from two microframes later collect
+it: NYET while nothing has arrived yet, MDATA with each part while more is to
+come. Each part lands in a buffer of the pipe's own and is copied on, since
+the translator's part sizes can leave the next one at an address the DMA
+can't write to.
+
+The translator's full-speed frame is budgeted. Each periodic endpoint behind
+a translator is charged its worst-case bus time (USB 2.0, 5.11.3) against
+90% of the frame, and each isochronous endpoint is given microframes of its
+own for what the translator runs for it, 188 bytes to a microframe, so an IN
+and an OUT stream don't collide in the translator. A pipe that doesn't fit is
+refused with ESP_ERR_NOT_SUPPORTED and an error log saying why.
+
+Not done: the budget charges every periodic endpoint in every frame,
+whatever its interval, and a translator serves one isochronous OUT endpoint.
 ---
 diff --git a/Kconfig b/Kconfig
 index 29c9a68..9680951 100644
@@ -384,7 +411,7 @@ index ed4b4ba..51da12c 100644
              handle_error(ext_hub_dev);
          }
 diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
-index b7100e4..cd60de9 100644
+index b7100e4..4e4dc04 100644
 --- a/src/hcd_dwc.c
 +++ b/src/hcd_dwc.c
 @@ -143,6 +143,13 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
@@ -1636,8 +1663,8 @@ index b7100e4..cd60de9 100644
 +    if (tt_periodic) {
 +        // A translator runs every periodic transaction of the devices behind it in each full-speed frame, so what
 +        // they take together has to fit in one. (The budget counts each endpoint in every frame, whatever its
-+        // interval.) Its isochronous OUT start splits all go in a frame's first microframes, and it takes at most
-+        // 188 bytes of them a microframe, so it serves one isochronous OUT endpoint.
++        // interval.) Each isochronous pipe also gets microframes of its own for what the translator runs for it,
++        // 188 bytes to a microframe, and the translator serves one isochronous OUT endpoint.
 +        uint32_t used = 0;
 +        uint32_t uframes[8] = {0};
 +        bool iso_out = false;
