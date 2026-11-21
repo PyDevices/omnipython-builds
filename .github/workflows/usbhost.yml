@@ -94,6 +94,23 @@ jobs:
             fi
             echo "planted fault $fault caught:"; grep FAIL /tmp/planted.log | head -3
           done
+      - name: Bulk and interrupt transfers keep a timed-out IN read armed, and the planted fault
+        # usbhost_host_xfer.c against a fake of ESP-IDF's host library
+        # (tests/host_xfer/). With the old retire-on-timeout, a packet that
+        # lands as a read gives up is lost, and the test has to fail.
+        run: |
+          build() {
+            cc -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -Itests/host_xfer -Isrc \
+               "$@" tests/test_host_xfer.c src/usbhost_host_xfer.c
+          }
+          build -o /tmp/test_host_xfer
+          /tmp/test_host_xfer
+          build -DUSBHOST_XFER_PLANT_RETIRE_IN -o /tmp/test_host_xfer_planted
+          if /tmp/test_host_xfer_planted > /tmp/planted.log 2>&1; then
+            cat /tmp/planted.log
+            echo "a raising read that retires its transfer was NOT caught"; exit 1
+          fi
+          echo "planted fault caught:"; grep FAIL /tmp/planted.log | head -3
       - name: TinyUSB's root-port enumeration (the GIGA's USB-A port), and its planted fault
         # TinyUSB at the commit MicroPython's lib/tinyusb points at, for the
         # pinned MicroPython. With patches/lib-tinyusb/ applied, a drive that

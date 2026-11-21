@@ -413,9 +413,10 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(usbhost_host_ctrl_obj, 4, 4, usbhost_
 
 // host_xfer(dev_id, endpoint, buf, timeout_ms, raise_on_timeout=True): a
 // bulk or interrupt transfer; an IN endpoint reads into buf, an OUT one sends
-// it. Returns the bytes moved. timeout_ms 0 waits for good. With
-// raise_on_timeout False, an IN read that times out returns 0, allocating
-// nothing, and leaves its transfer armed for the next read to collect.
+// it. Returns the bytes moved. timeout_ms 0 waits for good. An IN read that
+// times out leaves its transfer armed for the next read to collect, and
+// raises ETIMEDOUT, or with raise_on_timeout False returns 0, allocating
+// nothing.
 static mp_obj_t usbhost_host_xfer_py(size_t n_args, const mp_obj_t *args) {
     #if USBHOST_HAVE_HOST
     uint8_t ep = (uint8_t)mp_obj_get_int(args[1]);

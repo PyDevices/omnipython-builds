@@ -159,8 +159,13 @@ def host_xfer(dev_id: int, endpoint: int, buf: Any, timeout_ms: int, raise_on_ti
         endpoint: The endpoint address.
         buf: A writable buffer for IN, or the data for OUT.
         timeout_ms: Milliseconds to wait; 0 waits for good.
-        raise_on_timeout: When False, an IN read that times out returns 0 and
-            leaves its transfer armed for the next read to collect.
+        raise_on_timeout: When False, an IN read that times out returns 0
+            instead of raising OSError(ETIMEDOUT).
+
+    An IN read that times out leaves its transfer armed either way, and the
+    next read of the endpoint collects it, so a packet that arrives as the
+    timeout passes isn't lost. Bytes a transfer brings beyond what its read
+    asked for wait for the next read too.
 
     Returns:
         The number of bytes moved.
