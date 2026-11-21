@@ -232,6 +232,9 @@
   },
   "0077-micropython-shared-tinyusb-a-rings-bytes-are-outside-the-heap-on-esp32.patch": {
    "sha256": "52cc2e5640ee8ee917e88e11f5b239cb99a689ec15c69c77a6da32cb0b886d9a"
+  },
+  "0078-micropython-esp32-the-usb-host-library-from-the-registry-on-the-p4-and-s31.patch": {
+   "sha256": "37b9a1bd5f242068bceeb7bf7e425e8076469197392e72f35014805203cfb9aa"
   }
  },
  "tinyusb_patches": {
