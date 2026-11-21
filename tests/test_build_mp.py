@@ -311,7 +311,8 @@ class ManagedComponents(unittest.TestCase):
         import pins
 
         for name in build_mp.COMPONENTS:
-            self.assertEqual(pins.read(Path(build_mp.__file__).parent)[name].group, "toolchains", name)
+            lock_name = build_mp.COMPONENT_DOWNLOADS.get(name, name)
+            self.assertEqual(pins.read(Path(build_mp.__file__).parent)[lock_name].group, "toolchains", name)
 
     def test_esp_hosted_only_on_the_p4(self):
         self.assertIsNone(build_mp.component_copy(self.root, "esp32s3", build_mp.ESP_HOSTED))

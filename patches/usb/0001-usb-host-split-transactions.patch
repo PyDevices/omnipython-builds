@@ -1,0 +1,1275 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PyDevices <pydevices@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 06:00:00 -0600
+Subject: [PATCH] usb_host: full- and low-speed devices behind a high-speed
+ hub, through its transaction translator
+
+A full- or low-speed device behind a high-speed hub was refused. It is now
+reached through the hub's transaction translator with split transactions.
+
+The hub driver works out each device's translator (the high-speed hub's
+address and port, inherited through full-speed hubs) and the USB host
+library carries it into every pipe of the device. The HCD programs HCSPLT
+for those pipes.
+
+The DWC_OTG cannot issue split transactions in Scatter/Gather DMA mode:
+a split control transfer completes its setup stage and then never
+completes its data stage. With USB_HOST_DWC_SPLIT_TRANSACTIONS (on by
+default on the ESP32-P4 and ESP32-S31) a high-speed host port therefore
+runs in Buffer DMA mode. The HCD still fills and parses the same QTD lists;
+a small engine executes them, one channel run per QTD (per packet for a
+split), writes each QTD's status back as the DMA would, and reports the
+same channel events. It handles the split handshakes (start split ACK,
+complete split NYET, NAK restarts) and starts periodic channels from the
+SOF interrupt following the frame list, since Buffer DMA mode has no
+periodic scheduler.
+
+A halt never abandons a split whose start split the translator took: the
+translator has already answered the device, so its data exists only there.
+The complete split runs first, and a bulk transfer that has moved bytes when
+the halt lands completes short with them instead of being canceled. A bulk
+or control complete split that sees a transaction error is asked again, as
+the translator keeps the result until it is collected.
+
+Not done: Clear_TT_Buffer after a failed split to a translator's bulk or
+control endpoint, isochronous OUT splits of more than 188 bytes
+(multiple start splits), and the bandwidth budgeting of the translator's
+full-speed frame.
+---
+diff --git a/Kconfig b/Kconfig
+index d0bf947..325d70d 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -243,6 +243,19 @@ menu "USB-OTG"
+             accessing external RAM.
+         # Todo: IDF-11368 (aligned memory alloc size)
+ 
++    config USB_HOST_DWC_SPLIT_TRANSACTIONS
++        depends on IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31
++        bool "Full- and low-speed devices behind a high-speed hub (split transactions)"
++        default y
++        help
++            A full- or low-speed device behind a high-speed hub is reached through the hub's transaction
++            translator, using split transactions. The USB-DWC can only issue split transactions in Buffer DMA
++            mode, so with this option the high-speed host port runs in Buffer DMA mode instead of Scatter/Gather
++            DMA mode. The driver then starts each transaction from its interrupt handler, and periodic transfers
++            from the start of frame interrupt, which costs more CPU time than Scatter/Gather DMA.
++
++            When disabled, a full- or low-speed device behind a high-speed hub is refused.
++
+     # Hidden or compatibility options
+     config USB_OTG_SUPPORTED
+         # Invisible config kept for compatibility
+diff --git a/private_include/ext_hub.h b/private_include/ext_hub.h
+index aee4f6e..7d19b1b 100644
+--- a/private_include/ext_hub.h
++++ b/private_include/ext_hub.h
+@@ -106,6 +106,25 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed);
+  */
+ hcd_port_handle_t ext_hub_get_root_port(ext_hub_handle_t ext_hub_hdl);
+ 
++/**
++ * @brief Get the transaction translator that serves a device on one of an External Hub's ports
++ *
++ * A full- or low-speed device on a high-speed hub is reached through that hub's transaction translator. A device on
++ * a full-speed hub that is itself behind a high-speed hub shares the translator that serves the full-speed hub.
++ *
++ * @param[in] ext_hub_hdl External Hub device handle
++ * @param[in] port_num Port number (1-based)
++ * @param[in] port_speed Speed of the device on that port
++ * @param[out] tt_hub_addr Address of the high-speed hub whose transaction translator serves the device, 0 if none
++ * @param[out] tt_port_num That hub's port, 0 if none
++ *
++ * @return
++ *    - ESP_ERR_INVALID_ARG if a pointer is NULL
++ *    - ESP_ERR_NOT_FOUND if the hub is not found
++ *    - ESP_OK if the translator was obtained
++ */
++esp_err_t ext_hub_get_port_tt(ext_hub_handle_t ext_hub_hdl, uint8_t port_num, usb_speed_t port_speed, uint8_t *tt_hub_addr, uint8_t *tt_port_num);
++
+ /**
+  * @brief Add new device
+  *
+diff --git a/private_include/hcd.h b/private_include/hcd.h
+index e8e3e1f..bcc7342 100644
+--- a/private_include/hcd.h
++++ b/private_include/hcd.h
+@@ -197,6 +197,8 @@ typedef struct {
+     const usb_ep_desc_t *ep_desc;           /**< Pointer to endpoint descriptor of the pipe */
+     usb_speed_t dev_speed;                  /**< Speed of the device */
+     uint8_t dev_addr;                       /**< Device address of the pipe */
++    uint8_t tt_hub_addr;                    /**< Address of the high-speed hub whose transaction translator serves a full- or low-speed device, 0 if none */
++    uint8_t tt_port_num;                    /**< That hub's port the device is behind (1-based), 0 if none */
+ } hcd_pipe_config_t;
+ 
+ // ---------------------------------------------------- HCD Port -------------------------------------------------------
+diff --git a/private_include/usbh.h b/private_include/usbh.h
+index 6bf02c6..347a454 100644
+--- a/private_include/usbh.h
++++ b/private_include/usbh.h
+@@ -164,6 +164,8 @@ typedef struct {
+     hcd_port_handle_t root_port_hdl;        /**< Handle of the port that the device is connected to */
+     usb_device_handle_t parent_dev_hdl;     /**< Parent's device handle */
+     uint8_t parent_port_num;                /**< Parent's port number */
++    uint8_t tt_hub_addr;                    /**< Address of the high-speed hub whose transaction translator serves this full- or low-speed device, 0 if none */
++    uint8_t tt_port_num;                    /**< That hub's port the device is behind (1-based), 0 if none */
+ } usbh_dev_params_t;
+ 
+ // ---------------------- USBH Processing Functions ----------------------------
+@@ -445,6 +447,19 @@ esp_err_t usbh_dev_get_info(usb_device_handle_t dev_hdl, usb_device_info_t *dev_
+  */
+ esp_err_t usbh_dev_get_root_port_hdl(usb_device_handle_t dev_hdl, hcd_port_handle_t *root_port_hdl);
+ 
++/**
++ * @brief Get the transaction translator a full- or low-speed device is reached through
++ *
++ * @param[in] dev_hdl Device handle
++ * @param[out] tt_hub_addr Address of the high-speed hub whose transaction translator serves the device, 0 if none
++ * @param[out] tt_port_num That hub's port the device is behind, 0 if none
++ *
++ * @return
++ *    - ESP_OK: Transaction translator obtained successfully
++ *    - ESP_ERR_INVALID_ARG: Invalid argument
++ */
++esp_err_t usbh_dev_get_tt(usb_device_handle_t dev_hdl, uint8_t *tt_hub_addr, uint8_t *tt_port_num);
++
+ /**
+  * @brief Get a device's device descriptor
+  *
+diff --git a/src/ext_hub.c b/src/ext_hub.c
+index e71116b..4b376f6 100644
+--- a/src/ext_hub.c
++++ b/src/ext_hub.c
+@@ -1331,6 +1331,27 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed)
+     return ESP_OK;
+ }
+ 
++esp_err_t ext_hub_get_port_tt(ext_hub_handle_t ext_hub_hdl, uint8_t port_num, usb_speed_t port_speed, uint8_t *tt_hub_addr, uint8_t *tt_port_num)
++{
++    EXT_HUB_CHECK(ext_hub_hdl != NULL && tt_hub_addr != NULL && tt_port_num != NULL, ESP_ERR_INVALID_ARG);
++    EXT_HUB_CHECK(dev_is_in_list(ext_hub_hdl), ESP_ERR_NOT_FOUND);
++    ext_hub_dev_t *ext_hub_dev = (ext_hub_dev_t *)ext_hub_hdl;
++    usb_device_info_t dev_info;
++    ESP_ERROR_CHECK(usbh_dev_get_info(ext_hub_dev->constant.dev_hdl, &dev_info));
++    *tt_hub_addr = 0;
++    *tt_port_num = 0;
++    if (dev_info.speed == USB_SPEED_HIGH) {
++        // A high-speed hub translates for the full- and low-speed devices on its own ports
++        if (port_speed != USB_SPEED_HIGH) {
++            *tt_hub_addr = ext_hub_dev->constant.dev_addr;
++            *tt_port_num = port_num;
++        }
++        return ESP_OK;
++    }
++    // A full-speed hub behind a high-speed one: its devices share the translator that serves the hub
++    return usbh_dev_get_tt(ext_hub_dev->constant.dev_hdl, tt_hub_addr, tt_port_num);
++}
++
+ hcd_port_handle_t ext_hub_get_root_port(ext_hub_handle_t ext_hub_hdl)
+ {
+     EXT_HUB_CHECK(ext_hub_hdl != NULL, NULL);
+diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
+index 8dad6d8..cc690d8 100644
+--- a/src/hcd_dwc.c
++++ b/src/hcd_dwc.c
+@@ -143,6 +143,12 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
+ #define CACHE_SYNC_DATA_BUFFER_C2M(pipe, urb)
+ #endif // CACHED_MEMORY_SYNC
+ 
++#if CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS
++#define HCD_BUFFER_DMA                              1
++#else
++#define HCD_BUFFER_DMA                              0
++#endif
++
+ // ------------------------------------------------------ Types --------------------------------------------------------
+ 
+ typedef struct pipe_obj pipe_t;
+@@ -192,6 +198,36 @@ typedef struct {
+     } status_flags;                         // Status flags for the buffer
+ } dma_buffer_block_t;
+ 
++#if HCD_BUFFER_DMA
++typedef enum {
++    BD_STATE_IDLE,      // Not executing a buffer
++    BD_STATE_RUN,       // The channel is enabled
++    BD_STATE_WAIT,      // Waiting for a (micro)frame to start the channel in
++} bd_state_t;
++
++/**
++ * @brief Buffer DMA mode: where a pipe's channel is in executing its QTD list
++ */
++typedef struct {
++    void *list;                     // QTD list being executed
++    dma_buffer_block_t *buffer;     // Buffer the list belongs to
++    int len;                        // Length of the list
++    int idx;                        // Current QTD
++    int stop_idx;                   // QTD index reported when the buffer is done
++    int hoc_idx;                    // Isochronous: the last QTD of the buffer
++    int interval;                   // Isochronous: QTD spacing
++    uint32_t done;                  // Bytes of the current QTD moved so far
++    uint32_t run_len;               // Bytes the channel was started with
++    uint32_t run_pkts;              // Packets the channel was started with
++    uint8_t errors;                 // Consecutive transaction errors
++    uint8_t nyets;                  // Complete splits answered NYET
++    bd_state_t state;
++    uint8_t csplit: 1;              // The next run is a complete split
++    uint8_t ping: 1;                // The next OUT run starts with PING
++    uint8_t halt_req: 1;            // A halt was requested
++} bdma_t;
++#endif // HCD_BUFFER_DMA
++
+ /**
+  * @brief Object representing a pipe in the HCD layer
+  */
+@@ -220,6 +256,14 @@ struct pipe_obj {
+     // HAL related
+     usb_dwc_hal_chan_t *chan_obj;
+     usb_dwc_hal_ep_char_t ep_char;
++    // Split transactions: the transaction translator a full- or low-speed device behind a high-speed hub is reached
++    // through. tt_hub_addr is 0 for a device the root port talks to at its own speed.
++    uint8_t tt_hub_addr;
++    uint8_t tt_port_num;
++    bool tt_ls;                             // Low-speed device behind the translator
++#if HCD_BUFFER_DMA
++    bdma_t bdma;                            // Buffer DMA mode execution state
++#endif
+     // Port related
+     port_t *port;                           // The port to which this pipe is routed through
+     TAILQ_ENTRY(pipe_obj) tailq_entry;      // TailQ entry for port's list of pipes
+@@ -279,6 +323,10 @@ struct port_obj {
+     SemaphoreHandle_t port_mux;
+     void *context;
+     intr_handle_t isr_hdl;       // Interrupt handle for this root port (USB-OTG peripheral)
++#if HCD_BUFFER_DMA
++    bool bdma;                   // The port runs in Buffer DMA mode (split transactions)
++    uint32_t bdma_wait_mask;     // Channels waiting for a (micro)frame to start in
++#endif
+ };
+ 
+ // With s_port_inited[] we can check if a port has been initialized -> to provide singleton handle for each root port
+@@ -909,6 +957,573 @@ static usb_speed_t get_usb_port_speed(usb_dwc_speed_t priv)
+     }
+ }
+ 
++// ------------------------------------------ Buffer DMA (split transactions) ------------------------------------------
++
++#if HCD_BUFFER_DMA
++/*
++The DWC_OTG executes split transactions only in Buffer DMA mode: in Scatter/Gather mode a channel programmed for splits
++completes its start split and then never finishes the transaction. With CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS, a
++high-speed host port runs in Buffer DMA mode, and this engine executes the same QTD lists the rest of the HCD fills and
++parses: it programs one channel run per QTD (per packet for split transactions), writes each QTD's status back as the
++Scatter/Gather DMA would, and reports the same channel events. Periodic channels are started from the SOF interrupt
++according to the HAL's frame list, since Buffer DMA mode has no periodic scheduler.
++*/
++
++#define BD_HCCHAR_EPDIR         (1U << 15)
++#define BD_HCCHAR_EC_SHIFT      20
++#define BD_HCCHAR_EC_MASK       (3U << 20)
++#define BD_HCCHAR_ODDFRM        (1U << 29)
++#define BD_HCCHAR_CHDIS         (1U << 30)
++#define BD_HCCHAR_CHENA         (1U << 31)
++#define BD_HCSPLT_COMPSPLT      (1U << 16)
++#define BD_HCTSIZ_XFERSIZE_MASK 0x7FFFFU
++#define BD_HCTSIZ_PKTCNT_SHIFT  19
++#define BD_HCTSIZ_PKTCNT_MASK   0x3FFU
++#define BD_HCTSIZ_PID_SHIFT     29
++#define BD_HCTSIZ_PID_MASK      (3U << 29)
++#define BD_HCTSIZ_DOPNG         (1U << 31)
++#define BD_PID_DATA0            0U
++#define BD_PID_DATA2            1U
++#define BD_PID_DATA1            2U
++#define BD_PID_SETUP            3U
++
++#define BD_QTD_SIZE_MASK        0x1FFFFU
++#define BD_QTD_SETUP            (1U << 24)
++#define BD_QTD_IOC              (1U << 25)  // Set on the QTD that halts the channel (USB_DWC_HAL_XFER_DESC_FLAG_HOC)
++#define BD_QTD_STATUS_SHIFT     28
++#define BD_QTD_STATUS_MASK      (3U << 28)
++#define BD_QTD_ACTIVE           (1U << 31)
++
++#define BD_MAX_ERRORS           3   // Consecutive transaction errors before a transfer fails
++#define BD_MAX_CSPLIT_NYETS     6   // Periodic complete splits answered NYET before the (micro)frame is given up
++
++static inline bool bd_is_periodic(const pipe_t *pipe)
++{
++    return pipe->ep_char.type == USB_DWC_XFER_TYPE_INTR || pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS;
++}
++
++static inline bool bd_is_in(const pipe_t *pipe)
++{
++    return pipe->chan_obj->regs->hcchar_reg.val & BD_HCCHAR_EPDIR;
++}
++
++static inline uint32_t bd_frnum(const port_t *port)
++{
++    return usb_dwc_hal_port_get_cur_frame_num(port->hal) & 0x3FFF;
++}
++
++static inline usb_dwc_ll_dma_qtd_t *bd_qtd(pipe_t *pipe)
++{
++    return &((usb_dwc_ll_dma_qtd_t *)pipe->bdma.list)[pipe->bdma.idx];
++}
++
++static inline void bd_qtd_writeback(pipe_t *pipe, usb_dwc_ll_dma_qtd_t *qtd, uint32_t rem_len, uint32_t status)
++{
++    uint32_t val = qtd->buffer_status_val;
++    val &= ~(BD_QTD_SIZE_MASK | BD_QTD_STATUS_MASK | BD_QTD_ACTIVE);
++    val |= (rem_len & BD_QTD_SIZE_MASK) | (status << BD_QTD_STATUS_SHIFT);
++    qtd->buffer_status_val = val;
++    // The HCD reads the list from memory when it parses the buffer
++    CACHE_SYNC_XFER_DESCRIPTOR_LIST_C2M(pipe->bdma.buffer);
++}
++
++static inline void bd_wait(pipe_t *pipe)
++{
++    port_t *port = pipe->port;
++    pipe->bdma.state = BD_STATE_WAIT;
++    if (port->bdma_wait_mask == 0) {
++        usb_dwc_ll_gintsts_clear_intrs(port->hal->dev, USB_DWC_LL_INTR_CORE_SOF);
++        usb_dwc_ll_gintmsk_en_intrs(port->hal->dev, USB_DWC_LL_INTR_CORE_SOF);
++    }
++    port->bdma_wait_mask |= 1U << pipe->chan_obj->flags.chan_idx;
++}
++
++static inline void bd_unwait(pipe_t *pipe)
++{
++    port_t *port = pipe->port;
++    uint32_t bit = 1U << pipe->chan_obj->flags.chan_idx;
++    if (port->bdma_wait_mask & bit) {
++        port->bdma_wait_mask &= ~bit;
++        if (port->bdma_wait_mask == 0) {
++            usb_dwc_ll_gintmsk_dis_intrs(port->hal->dev, USB_DWC_LL_INTR_CORE_SOF);
++        }
++    }
++}
++
++/**
++ * @brief Start the channel on what is left of the current QTD
++ *
++ * @param odd For a periodic channel, start it in the next odd (rather than even) (micro)frame
++ */
++static void bd_arm(pipe_t *pipe, bool odd)
++{
++    bdma_t *bd = &pipe->bdma;
++    volatile usb_dwc_host_chan_regs_t *regs = pipe->chan_obj->regs;
++    usb_dwc_ll_dma_qtd_t *qtd = bd_qtd(pipe);
++    const uint32_t mps = pipe->ep_char.mps;
++    const bool is_in = bd_is_in(pipe);
++    const bool split = pipe->tt_hub_addr != 0;
++    const uint32_t size = qtd->buffer_status_val & BD_QTD_SIZE_MASK;
++    const uint32_t rem = size - bd->done;
++    uint32_t len;
++    uint32_t pkts;
++    if (pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS) {
++        // One (micro)frame's worth: up to three packets on a high-bandwidth high-speed endpoint
++        len = rem;
++        pkts = (len == 0) ? 1 : (len + mps - 1) / mps;
++    } else if (split || pipe->ep_char.type == USB_DWC_XFER_TYPE_INTR) {
++        // A split moves one packet, and an interrupt QTD is one packet in its own (micro)frame
++        len = (rem < mps) ? rem : mps;
++        pkts = 1;
++    } else {
++        len = rem;
++        pkts = (len == 0) ? 1 : (len + mps - 1) / mps;
++        if (pkts > BD_HCTSIZ_PKTCNT_MASK) {
++            pkts = BD_HCTSIZ_PKTCNT_MASK;
++            len = pkts * mps;
++        }
++    }
++    bd->run_len = len;
++    bd->run_pkts = pkts;
++
++    uint32_t pid = regs->hctsiz_reg.val & BD_HCTSIZ_PID_MASK;   // The data toggle the last run left
++    if (qtd->buffer_status_val & BD_QTD_SETUP) {
++        pid = BD_PID_SETUP << BD_HCTSIZ_PID_SHIFT;
++    } else if (pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS) {
++        uint32_t iso_pid = (is_in && pkts == 3) ? BD_PID_DATA2 : (is_in && pkts == 2) ? BD_PID_DATA1 : BD_PID_DATA0;
++        pid = iso_pid << BD_HCTSIZ_PID_SHIFT;
++    }
++    uint32_t hctsiz = (len & BD_HCTSIZ_XFERSIZE_MASK) | ((pkts & BD_HCTSIZ_PKTCNT_MASK) << BD_HCTSIZ_PKTCNT_SHIFT) | pid;
++    if (bd->ping && !is_in && !split) {
++        hctsiz |= BD_HCTSIZ_DOPNG;
++    }
++    regs->hctsiz_reg.val = hctsiz;
++    regs->hcdma_reg.val = (uint32_t)(qtd->buffer + bd->done);
++    if (split) {
++        uint32_t hcsplt = regs->hcsplt_reg.val & ~BD_HCSPLT_COMPSPLT;
++        if (bd->csplit) {
++            hcsplt |= BD_HCSPLT_COMPSPLT;
++        }
++        regs->hcsplt_reg.val = hcsplt;
++    }
++    uint32_t ec = (pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS) ? pkts : 1;
++    uint32_t hcchar = regs->hcchar_reg.val & ~(BD_HCCHAR_CHDIS | BD_HCCHAR_CHENA | BD_HCCHAR_ODDFRM | BD_HCCHAR_EC_MASK);
++    hcchar |= ec << BD_HCCHAR_EC_SHIFT;
++    if (bd_is_periodic(pipe) && odd) {
++        hcchar |= BD_HCCHAR_ODDFRM;
++    }
++    regs->hcchar_reg.val = hcchar | BD_HCCHAR_CHENA;
++    bd_unwait(pipe);
++    bd->state = BD_STATE_RUN;
++}
++
++/**
++ * @brief Start a periodic channel for the next (micro)frame
++ */
++static inline void bd_arm_next(pipe_t *pipe)
++{
++    bd_arm(pipe, (bd_frnum(pipe->port) + 1) & 1);
++}
++
++/**
++ * @brief Start the channel again on the current QTD: at once, or for a periodic channel or a throttled retry, from the
++ * SOF interrupt
++ */
++static inline void bd_retry(pipe_t *pipe, bool now)
++{
++    if (now) {
++        if (bd_is_periodic(pipe)) {
++            bd_arm_next(pipe);
++        } else {
++            bd_arm(pipe, false);
++        }
++    } else {
++        bd_wait(pipe);
++    }
++}
++
++static usb_dwc_hal_chan_event_t bd_end(pipe_t *pipe, usb_dwc_hal_chan_event_t event, int stop_idx)
++{
++    bdma_t *bd = &pipe->bdma;
++    bd_unwait(pipe);
++    bd->state = BD_STATE_IDLE;
++    bd->halt_req = 0;
++    bd->stop_idx = stop_idx;
++    pipe->chan_obj->flags.active = 0;
++    return event;
++}
++
++static inline usb_dwc_hal_chan_event_t bd_error(pipe_t *pipe, usb_dwc_hal_chan_error_t error)
++{
++    pipe->chan_obj->error = error;
++    return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_ERROR, pipe->bdma.idx);
++}
++
++/**
++ * @brief Stop at a halt request. A bulk QTD that has already moved bytes completes short instead, so the bytes reach
++ * the transfer rather than being dropped with it.
++ */
++static usb_dwc_hal_chan_event_t bd_halt_point(pipe_t *pipe)
++{
++    bdma_t *bd = &pipe->bdma;
++    bd->halt_req = 0;
++    if (bd->done > 0 && pipe->ep_char.type == USB_DWC_XFER_TYPE_BULK) {
++        usb_dwc_ll_dma_qtd_t *qtd = bd_qtd(pipe);
++        uint32_t size = qtd->buffer_status_val & BD_QTD_SIZE_MASK;
++        bd_qtd_writeback(pipe, qtd, size - bd->done, USB_DWC_LL_QTD_STATUS_SUCCESS);
++        bd->done = 0;
++        return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_CPLT, (bd->idx + 1) % bd->len);
++    }
++    return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_HALT_REQ, bd->idx);
++}
++
++/**
++ * @brief Go on with the transfer, or stop if a halt was requested. A split whose start split the translator took is
++ * finished first: the translator has already answered the device, so its result exists only in the translator.
++ */
++static usb_dwc_hal_chan_event_t bd_go_on(pipe_t *pipe, bool now)
++{
++    if (pipe->bdma.halt_req && !(pipe->tt_hub_addr != 0 && pipe->bdma.csplit)) {
++        return bd_halt_point(pipe);
++    }
++    bd_retry(pipe, now);
++    return USB_DWC_HAL_CHAN_EVENT_NONE;
++}
++
++/**
++ * @brief The current QTD has moved all it will move: write its status back, then go on to the next QTD or complete
++ */
++static usb_dwc_hal_chan_event_t bd_qtd_done(pipe_t *pipe, bool short_in)
++{
++    bdma_t *bd = &pipe->bdma;
++    usb_dwc_ll_dma_qtd_t *qtd = bd_qtd(pipe);
++    uint32_t size = qtd->buffer_status_val & BD_QTD_SIZE_MASK;
++    bool halt = (qtd->buffer_status_val & BD_QTD_IOC) || short_in;
++    bd_qtd_writeback(pipe, qtd, size - bd->done, USB_DWC_LL_QTD_STATUS_SUCCESS);
++    if (bd->halt_req && pipe->ep_char.type != USB_DWC_XFER_TYPE_BULK) {
++        // Only a bulk transfer can end early with what it has; anything else is canceled
++        bd->done = 0;
++        return bd_halt_point(pipe);
++    }
++    bd->done = 0;
++    bd->ping = 0;
++    int next = bd->idx + 1;
++    if (halt || next >= bd->len) {
++        // As in Scatter/Gather mode, the reported QTD index is the one after the QTD that halted the channel
++        return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_CPLT, next % bd->len);
++    }
++    bd->idx = next;
++    return bd_go_on(pipe, !bd_is_periodic(pipe));  // An interrupt QTD waits for its own (micro)frame
++}
++
++/**
++ * @brief Isochronous: the QTD for this (micro)frame is done, or was missed. Go on to the next scheduled one.
++ */
++static usb_dwc_hal_chan_event_t bd_isoc_next(pipe_t *pipe)
++{
++    bdma_t *bd = &pipe->bdma;
++    if (bd->idx == bd->hoc_idx) {
++        return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_CPLT, bd->idx);
++    }
++    bd->idx = (bd->idx + bd->interval) % bd->len;
++    bd->done = 0;
++    bd_wait(pipe);
++    return USB_DWC_HAL_CHAN_EVENT_NONE;
++}
++
++/**
++ * @brief Isochronous: start the channel if the next (micro)frame is the current QTD's, skipping any QTD whose
++ * (micro)frame has already gone by
++ *
++ * @return USB_DWC_HAL_CHAN_EVENT_CPLT if the last QTD was skipped, else USB_DWC_HAL_CHAN_EVENT_NONE
++ */
++static usb_dwc_hal_chan_event_t bd_isoc_slot(pipe_t *pipe, uint32_t next_slot)
++{
++    next_slot &= XFER_LIST_LEN_ISOC - 1;
++    bdma_t *bd = &pipe->bdma;
++    for (int guard = 0; guard < XFER_LIST_LEN_ISOC; guard++) {
++        uint32_t ahead = ((uint32_t)bd->idx - next_slot) & (XFER_LIST_LEN_ISOC - 1);
++        if (ahead == 0) {
++            if (bd_qtd(pipe)->buffer_status_val & BD_QTD_ACTIVE) {
++                bd_arm(pipe, next_slot & 1);
++                return USB_DWC_HAL_CHAN_EVENT_NONE;
++            }
++        } else if (ahead < XFER_LIST_LEN_ISOC / 2) {
++            return USB_DWC_HAL_CHAN_EVENT_NONE;    // Its (micro)frame is still to come
++        }
++        // Missed: the QTD stays active, which the HCD parses as not executed
++        if (bd->idx == bd->hoc_idx) {
++            return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_CPLT, bd->idx);
++        }
++        bd->idx = (bd->idx + bd->interval) % bd->len;
++    }
++    return USB_DWC_HAL_CHAN_EVENT_NONE;
++}
++
++static void bd_activate(pipe_t *pipe, void *xfer_desc_list, int desc_list_len, int start_idx)
++{
++    bdma_t *bd = &pipe->bdma;
++    usb_dwc_hal_chan_t *chan_obj = pipe->chan_obj;
++    assert(!chan_obj->flags.active);
++    bd->list = xfer_desc_list;
++    bd->buffer = pipe->buffers[pipe->multi_buffer_control.rd_idx];
++    bd->len = desc_list_len;
++    bd->idx = start_idx;
++    bd->done = 0;
++    bd->errors = 0;
++    bd->nyets = 0;
++    bd->csplit = 0;
++    bd->ping = 0;
++    bd->halt_req = 0;
++    chan_obj->flags.active = 1;
++    usb_dwc_ll_hctsiz_set_dopng(chan_obj->regs, false);
++    switch (pipe->ep_char.type) {
++    case USB_DWC_XFER_TYPE_ISOCHRONOUS: {
++        int interval = pipe->ep_char.periodic.interval;
++        bd->interval = (interval > XFER_LIST_LEN_ISOC) ? XFER_LIST_LEN_ISOC : (interval < 1 ? 1 : interval);
++        // The last filled QTD, found by walking the schedule from the first
++        int idx = start_idx;
++        bd->hoc_idx = start_idx;
++        for (int i = 0; i < XFER_LIST_LEN_ISOC; i++) {
++            usb_dwc_ll_dma_qtd_t *qtd = &((usb_dwc_ll_dma_qtd_t *)xfer_desc_list)[idx];
++            if (!(qtd->buffer_status_val & BD_QTD_ACTIVE)) {
++                break;
++            }
++            bd->hoc_idx = idx;
++            if (qtd->buffer_status_val & BD_QTD_IOC) {
++                break;
++            }
++            idx = (idx + bd->interval) % XFER_LIST_LEN_ISOC;
++        }
++        // A buffer that follows on from the last one starts in the very next (micro)frame: waiting for the SOF
++        // interrupt would miss it
++        if (pipe->tt_hub_addr == 0
++                && (((uint32_t)start_idx - bd_frnum(pipe->port) - 1) & (XFER_LIST_LEN_ISOC - 1)) == 0) {
++            bd_arm_next(pipe);
++        } else {
++            bd_wait(pipe);
++        }
++        break;
++    }
++    case USB_DWC_XFER_TYPE_INTR:
++        bd_wait(pipe);
++        break;
++    default:
++        bd_arm(pipe, false);
++        break;
++    }
++}
++
++static bool bd_request_halt(pipe_t *pipe)
++{
++    bdma_t *bd = &pipe->bdma;
++    usb_dwc_hal_chan_t *chan_obj = pipe->chan_obj;
++    if (!chan_obj->flags.active) {
++        return true;
++    }
++    if (bd->state == BD_STATE_RUN) {
++        // The channel halted interrupt reports the halt
++        bd->halt_req = 1;
++        if (pipe->tt_hub_addr != 0 && bd->csplit) {
++            return false;   // A complete split: let it collect the translator's result
++        }
++        usb_dwc_ll_hcchar_disable_chan(chan_obj->regs);
++        return false;
++    }
++    // Waiting for its (micro)frame: nothing is on the bus. The next SOF interrupt reports the halt.
++    bd->halt_req = 1;
++    return false;
++}
++
++/**
++ * @brief The pipe is being marked halted without a halt request (its port is gone): forget its schedule
++ */
++static void bd_mark_halted(pipe_t *pipe)
++{
++    if (pipe->bdma.state != BD_STATE_IDLE || pipe->chan_obj->flags.active) {
++        bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_NONE, pipe->bdma.idx);
++    }
++}
++
++/**
++ * @brief A channel interrupt in Buffer DMA mode: only the channel halted interrupt is unmasked, and HCINT says why
++ */
++static usb_dwc_hal_chan_event_t bd_decode_intr(pipe_t *pipe)
++{
++    bdma_t *bd = &pipe->bdma;
++    volatile usb_dwc_host_chan_regs_t *regs = pipe->chan_obj->regs;
++    uint32_t hcint = usb_dwc_ll_hcint_read_and_clear_intrs(regs);
++    if (!(hcint & USB_DWC_LL_INTR_CHAN_CHHLTD) || bd->state != BD_STATE_RUN) {
++        return USB_DWC_HAL_CHAN_EVENT_NONE;
++    }
++    bd->state = BD_STATE_IDLE;
++    if (bd->halt_req && (pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS
++                         || (hcint & (USB_DWC_LL_INTR_CHAN_STALL | USB_DWC_LL_INTR_CHAN_BBLEER | USB_DWC_LL_INTR_CHAN_AHBERR)))) {
++        bd->halt_req = 0;
++        return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_HALT_REQ, bd->idx);
++    }
++    const bool is_in = bd_is_in(pipe);
++    const bool periodic = bd_is_periodic(pipe);
++    const bool split = pipe->tt_hub_addr != 0;
++    const uint32_t mps = pipe->ep_char.mps;
++    const uint32_t hctsiz = regs->hctsiz_reg.val;
++    const uint32_t left_bytes = hctsiz & BD_HCTSIZ_XFERSIZE_MASK;
++    const uint32_t left_pkts = (hctsiz >> BD_HCTSIZ_PKTCNT_SHIFT) & BD_HCTSIZ_PKTCNT_MASK;
++    uint32_t moved;
++    if (is_in) {
++        moved = bd->run_len - left_bytes;
++    } else {
++        moved = (bd->run_pkts - left_pkts) * mps;
++        if (moved > bd->run_len) {
++            moved = bd->run_len;
++        }
++    }
++
++    if (hcint & USB_DWC_LL_INTR_CHAN_STALL) {
++        return bd_error(pipe, USB_DWC_HAL_CHAN_ERROR_STALL);
++    }
++    if (hcint & USB_DWC_LL_INTR_CHAN_BBLEER) {
++        return bd_error(pipe, USB_DWC_HAL_CHAN_ERROR_PKT_BBL);
++    }
++    if (hcint & USB_DWC_LL_INTR_CHAN_AHBERR) {
++        return bd_error(pipe, USB_DWC_HAL_CHAN_ERROR_XCS_XACT);
++    }
++
++    if (pipe->ep_char.type == USB_DWC_XFER_TYPE_ISOCHRONOUS) {
++        // One try per (micro)frame: a failed packet is reported in its QTD, not retried
++        usb_dwc_ll_dma_qtd_t *qtd = bd_qtd(pipe);
++        bool ok = hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL;
++        uint32_t size = qtd->buffer_status_val & BD_QTD_SIZE_MASK;
++        bd_qtd_writeback(pipe, qtd, ok ? size - moved : size, ok ? USB_DWC_LL_QTD_STATUS_SUCCESS : USB_DWC_LL_QTD_STATUS_PKTERR);
++        usb_dwc_hal_chan_event_t event = bd_isoc_next(pipe);
++        if (event == USB_DWC_HAL_CHAN_EVENT_NONE && !split) {
++            event = bd_isoc_slot(pipe, (bd_frnum(pipe->port) + 1) & 0x3FFF);
++        }
++        return event;
++    }
++
++    if (hcint & (USB_DWC_LL_INTR_CHAN_XACTERR | USB_DWC_LL_INTR_CHAN_DATATGLERR | USB_DWC_LL_INTR_CHAN_FRMOVRUN)) {
++        if ((hcint & USB_DWC_LL_INTR_CHAN_XACTERR) && ++bd->errors >= BD_MAX_ERRORS) {
++            return bd_error(pipe, USB_DWC_HAL_CHAN_ERROR_XCS_XACT);
++        }
++        if (!split) {
++            bd->done += moved;
++        }
++        if (split && bd->csplit && !periodic && (hcint & USB_DWC_LL_INTR_CHAN_XACTERR)) {
++            // A bulk or control translator keeps its result until a complete split collects it: ask again
++            return bd_go_on(pipe, true);
++        }
++        // Otherwise a split starts the packet over with a start split
++        bd->csplit = 0;
++        bd->nyets = 0;
++        return bd_go_on(pipe, !periodic);
++    }
++
++    if (split) {
++        if (!bd->csplit) {
++            if (hcint & USB_DWC_LL_INTR_CHAN_ACK) {
++                // The translator took the start split: ask for the result
++                bd->csplit = 1;
++                bd->errors = 0;
++                return bd_go_on(pipe, true);
++            }
++            // NAK (or NYET): the translator's buffer is busy. Try again in the next frame.
++            return bd_go_on(pipe, false);
++        }
++        if (hcint & USB_DWC_LL_INTR_CHAN_NYET) {
++            // Not yet: the full-speed transaction is still on its way
++            if (periodic && ++bd->nyets > BD_MAX_CSPLIT_NYETS) {
++                bd->csplit = 0;
++                bd->nyets = 0;
++                return bd_go_on(pipe, false);
++            }
++            return bd_go_on(pipe, true);
++        }
++        if ((hcint & USB_DWC_LL_INTR_CHAN_NAK) && !(hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL)) {
++            // The device NAKed: start over in the next frame (the next interval for a periodic endpoint)
++            bd->csplit = 0;
++            bd->nyets = 0;
++            return bd_go_on(pipe, false);
++        }
++        if (hcint & (USB_DWC_LL_INTR_CHAN_XFERCOMPL | USB_DWC_LL_INTR_CHAN_ACK)) {
++            bd->csplit = 0;
++            bd->nyets = 0;
++            bd->errors = 0;
++            bd->done += is_in ? moved : bd->run_len;
++            bool short_in = is_in && moved < mps;
++            uint32_t size = bd_qtd(pipe)->buffer_status_val & BD_QTD_SIZE_MASK;
++            if (!short_in && bd->done < size) {
++                return bd_go_on(pipe, !periodic);  // Next packet of this QTD
++            }
++            return bd_qtd_done(pipe, short_in);
++        }
++        bd->csplit = 0;
++        return bd_go_on(pipe, false);
++    }
++
++    if (hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL) {
++        bd->errors = 0;
++        bd->done += moved;
++        bool short_in = is_in && moved < bd->run_len;
++        uint32_t size = bd_qtd(pipe)->buffer_status_val & BD_QTD_SIZE_MASK;
++        if (!short_in && bd->done < size) {
++            return bd_go_on(pipe, !periodic);  // More than one run's worth of packets
++        }
++        return bd_qtd_done(pipe, short_in);
++    }
++    // Halted part way: NAK on a periodic IN (no data this interval), NYET on a high-speed OUT (go on with PING), or
++    // a halt request
++    bd->done += moved;
++    if ((hcint & USB_DWC_LL_INTR_CHAN_NYET) && !is_in) {
++        bd->ping = 1;
++    }
++    return bd_go_on(pipe, !periodic);
++}
++#endif // HCD_BUFFER_DMA
++
++// ------------------ Channel operations -------------------
++
++static inline void _chan_activate(pipe_t *pipe, void *xfer_desc_list, int desc_list_len, int start_idx)
++{
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        bd_activate(pipe, xfer_desc_list, desc_list_len, start_idx);
++        return;
++    }
++#endif
++    usb_dwc_hal_chan_activate(pipe->chan_obj, xfer_desc_list, desc_list_len, start_idx);
++}
++
++static inline bool _chan_request_halt(pipe_t *pipe)
++{
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        return bd_request_halt(pipe);
++    }
++#endif
++    return usb_dwc_hal_chan_request_halt(pipe->chan_obj);
++}
++
++static inline void _chan_mark_halted(pipe_t *pipe)
++{
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        bd_mark_halted(pipe);
++    }
++#endif
++    usb_dwc_hal_chan_mark_halted(pipe->chan_obj);
++}
++
++static inline int _chan_get_qtd_idx(pipe_t *pipe)
++{
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        return pipe->bdma.stop_idx;
++    }
++#endif
++    return usb_dwc_hal_chan_get_qtd_idx(pipe->chan_obj);
++}
++
+ // ----------------- Interrupt Handlers --------------------
+ 
+ /**
+@@ -935,7 +1550,15 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+         break;
+     }
+     case USB_DWC_HAL_PORT_EVENT_ENABLED: {
+-        usb_dwc_hal_port_enable(port->hal);  // Initialize remaining host port registers
++#if HCD_BUFFER_DMA
++        if (port->bdma) {
++            // Buffer DMA mode: leave Scatter/Gather DMA off. Periodic channels are started from the SOF interrupt.
++            usb_dwc_ll_hcfg_dis_perio_sched(port->hal->dev);
++        } else
++#endif
++        {
++            usb_dwc_hal_port_enable(port->hal);  // Initialize remaining host port registers
++        }
+         port->speed = get_usb_port_speed(usb_dwc_hal_port_get_conn_speed(port->hal));
+         port->state = HCD_PORT_STATE_ENABLED;
+         port->flags.conn_dev_ena = 1;
+@@ -997,9 +1620,8 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+  * @param[out] yield Set to true if a yield is required as a result of handling the interrupt
+  * @return hcd_pipe_event_t The pipe event
+  */
+-static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_obj, bool *yield)
++static hcd_pipe_event_t _chan_event_hdlr(pipe_t *pipe, usb_dwc_hal_chan_t *chan_obj, usb_dwc_hal_chan_event_t chan_event, bool *yield)
+ {
+-    usb_dwc_hal_chan_event_t chan_event = usb_dwc_hal_chan_decode_intr(chan_obj);
+     hcd_pipe_event_t event = HCD_PIPE_EVENT_NONE;
+ 
+     switch (chan_event) {
+@@ -1011,10 +1633,17 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+         pipe->last_event = HCD_PIPE_EVENT_URB_DONE;
+         event = pipe->last_event;
+         // Mark the buffer as done
+-        int stop_idx = usb_dwc_hal_chan_get_qtd_idx(chan_obj);
++        int stop_idx = _chan_get_qtd_idx(pipe);
+         _buffer_done(pipe, stop_idx, pipe->last_event, false);
++#if HCD_BUFFER_DMA
++        // In Buffer DMA mode a transfer that completes while a halt is pending also completes the halt (it moved
++        // bytes, which a canceled transfer would drop)
++        const bool halting = pipe->port->bdma && pipe->cs_flags.waiting_halt && pipe->task_waiting_pipe_notif != NULL;
++#else
++        const bool halting = false;
++#endif
+         // First check if there is another buffer we can execute. But we only want to execute if there's still a valid device
+-        if (_buffer_can_exec(pipe) && pipe->port->flags.conn_dev_ena) {
++        if (!halting && _buffer_can_exec(pipe) && pipe->port->flags.conn_dev_ena) {
+             // If the next buffer is filled and ready to execute, execute it
+             _buffer_exec(pipe);
+         }
+@@ -1025,6 +1654,10 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+             // Now that we've parsed a buffer, see if another URB can be filled in its place
+             _buffer_fill(pipe);
+         }
++        if (halting) {
++            pipe->state = HCD_PIPE_STATE_HALTED;
++            *yield |= _internal_pipe_event_notify(pipe, true);
++        }
+         break;
+     }
+     case USB_DWC_HAL_CHAN_EVENT_ERROR: {
+@@ -1043,7 +1676,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+         event = pipe->last_event;
+         pipe->state = HCD_PIPE_STATE_HALTED;
+         // Mark the buffer as done with an error
+-        int stop_idx = usb_dwc_hal_chan_get_qtd_idx(chan_obj);
++        int stop_idx = _chan_get_qtd_idx(pipe);
+         _buffer_done(pipe, stop_idx, pipe->last_event, false);
+         // Parse the buffer
+         _buffer_parse(pipe);
+@@ -1056,7 +1689,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+         event = pipe->last_event;
+         // Halt request event is triggered when packet is successful completed. But just treat all halted transfers as errors
+         pipe->state = HCD_PIPE_STATE_HALTED;
+-        int stop_idx = usb_dwc_hal_chan_get_qtd_idx(chan_obj);
++        int stop_idx = _chan_get_qtd_idx(pipe);
+         _buffer_done(pipe, stop_idx, HCD_PIPE_EVENT_NONE, true);
+         // Parse the buffer
+         _buffer_parse(pipe);
+@@ -1074,6 +1707,88 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+     return event;
+ }
+ 
++static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_obj, bool *yield)
++{
++    usb_dwc_hal_chan_event_t chan_event;
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        chan_event = bd_decode_intr(pipe);
++    } else
++#endif
++    {
++        chan_event = usb_dwc_hal_chan_decode_intr(chan_obj);
++    }
++    return _chan_event_hdlr(pipe, chan_obj, chan_event, yield);
++}
++
++#if HCD_BUFFER_DMA
++/**
++ * @brief Start of (micro)frame in Buffer DMA mode: start the channels waiting for this (micro)frame
++ */
++static void bd_sof(port_t *port, bool *yield)
++{
++    usb_dwc_hal_context_t *hal = port->hal;
++    const uint32_t next = (bd_frnum(port) + 1) & 0x3FFF;
++    const bool hs = port->speed == USB_SPEED_HIGH;
++    const bool frame_start = !hs || (next & 7) == 0;
++    const uint32_t frame = hs ? (next >> 3) : next;
++    const uint32_t sched = frame_start ? ((uint32_t *)port->frame_list)[frame % FRAME_LIST_LEN] : 0;
++    uint32_t mask = port->bdma_wait_mask;
++    while (mask) {
++        int chan_idx = __builtin_ctz(mask);
++        mask &= mask - 1;
++        uint32_t bit = 1U << chan_idx;
++        usb_dwc_hal_chan_t *chan_obj = hal->channels.hdls[chan_idx];
++        pipe_t *pipe = (chan_obj != NULL) ? (pipe_t *)usb_dwc_hal_chan_get_context(chan_obj) : NULL;
++        if (!(port->bdma_wait_mask & bit)) {
++            continue;   // Started or ended while a callback ran
++        }
++        if (pipe == NULL || pipe->bdma.state != BD_STATE_WAIT || !chan_obj->flags.active) {
++            port->bdma_wait_mask &= ~bit;
++            continue;
++        }
++        usb_dwc_hal_chan_event_t chan_event = USB_DWC_HAL_CHAN_EVENT_NONE;
++        if (pipe->bdma.halt_req) {
++            chan_event = bd_halt_point(pipe);
++        } else if (!port->flags.conn_dev_ena) {
++            continue;
++        } else {
++            switch (pipe->ep_char.type) {
++            case USB_DWC_XFER_TYPE_ISOCHRONOUS:
++                if (pipe->tt_hub_addr == 0) {
++                    chan_event = bd_isoc_slot(pipe, next);
++                } else if (sched & bit) {
++                    bd_arm(pipe, next & 1);
++                }
++                break;
++            case USB_DWC_XFER_TYPE_INTR:
++                if (sched & bit) {
++                    bd_arm(pipe, next & 1);
++                }
++                break;
++            default:
++                // Retries of control and bulk transactions: one per (micro)frame, or per frame for a split
++                if (frame_start || pipe->tt_hub_addr == 0) {
++                    bd_arm(pipe, false);
++                }
++                break;
++            }
++        }
++        if (chan_event != USB_DWC_HAL_CHAN_EVENT_NONE) {
++            hcd_pipe_event_t event = _chan_event_hdlr(pipe, chan_obj, chan_event, yield);
++            if (event != HCD_PIPE_EVENT_NONE && pipe->callback != NULL) {
++                HCD_EXIT_CRITICAL_ISR();
++                *yield |= pipe->callback((hcd_pipe_handle_t)pipe, event, pipe->callback_arg, true);
++                HCD_ENTER_CRITICAL_ISR();
++            }
++        }
++    }
++    if (port->bdma_wait_mask == 0) {
++        usb_dwc_ll_gintmsk_dis_intrs(hal->dev, USB_DWC_LL_INTR_CORE_SOF);
++    }
++}
++#endif // HCD_BUFFER_DMA
++
+ /**
+  * @brief Main interrupt handler
+  *
+@@ -1091,6 +1806,13 @@ static void intr_hdlr_main(void *arg)
+     bool yield = false;
+ 
+     HCD_ENTER_CRITICAL_ISR();
++#if HCD_BUFFER_DMA
++    bool sof = false;
++    if (port->bdma) {
++        // The HAL clears every core interrupt it reads, the SOF interrupt included, so look first
++        sof = port->hal->dev->gintsts_reg.val & port->hal->dev->gintmsk_reg.val & USB_DWC_LL_INTR_CORE_SOF;
++    }
++#endif
+     usb_dwc_hal_port_event_t hal_port_evt = usb_dwc_hal_decode_intr(port->hal);
+     if (hal_port_evt == USB_DWC_HAL_PORT_EVENT_CHAN) {
+         // Channel event. Cycle through each pending channel
+@@ -1119,6 +1841,11 @@ static void intr_hdlr_main(void *arg)
+             }
+         }
+     }
++#if HCD_BUFFER_DMA
++    if (sof) {
++        bd_sof(port, &yield);
++    }
++#endif
+     HCD_EXIT_CRITICAL_ISR();
+ 
+     if (yield) {
+@@ -1254,11 +1981,41 @@ static bool _port_debounce(port_t *port)
+     return is_connected;
+ }
+ 
++/**
++ * @brief Program a pipe's channel: its endpoint characteristics, and its split control
++ *
++ * A pipe to a full- or low-speed device behind a high-speed hub sends every transaction as a start split and a
++ * complete split to that hub's transaction translator, named by the hub's address and port in HCSPLT. The register
++ * is written for every pipe, so a channel that served a split pipe before doesn't keep splitting.
++ */
++static void pipe_chan_set_ep_char(port_t *port, pipe_t *pipe)
++{
++    usb_dwc_hal_chan_set_ep_char(port->hal, pipe->chan_obj, &pipe->ep_char);
++    volatile usb_dwc_host_chan_regs_t *regs = pipe->chan_obj->regs;
++    usb_dwc_hcsplt_reg_t hcsplt = {.val = 0};
++    if (pipe->tt_hub_addr) {
++        hcsplt.spltena = 1;
++        hcsplt.hubaddr = pipe->tt_hub_addr;
++        hcsplt.prtaddr = pipe->tt_port_num;
++        hcsplt.xactpos = 3; // All of the payload in one start split
++        if (pipe->tt_ls) {
++            regs->hcchar_reg.lspddev = 1;
++        }
++    }
++    regs->hcsplt_reg.val = hcsplt.val;
++#if HCD_BUFFER_DMA
++    if (port->bdma) {
++        // Buffer DMA mode: every reason the channel stops is read from HCINT once it has halted
++        usb_dwc_ll_hcintmsk_set_intr_mask(regs, USB_DWC_LL_INTR_CHAN_CHHLTD);
++    }
++#endif
++}
++
+ static void _port_reset_all_pipes(port_t *port)
+ {
+     pipe_t *pipe;
+     TAILQ_FOREACH(pipe, &port->pipes_idle_tailq, tailq_entry) {
+-        usb_dwc_hal_chan_set_ep_char(port->hal, pipe->chan_obj, &pipe->ep_char);
++        pipe_chan_set_ep_char(port, pipe);
+     }
+     CACHE_SYNC_FRAME_LIST(port->frame_list);
+ }
+@@ -1430,7 +2187,12 @@ static esp_err_t _port_cmd_reset(port_t *port)
+     usb_dwc_hal_set_fifo_config(port->hal, &port->fifo_config);// Apply FIFO settings
+ 
+     usb_dwc_hal_port_set_frame_list(port->hal, port->frame_list, FRAME_LIST_LEN);   // Set periodic frame list
+-    usb_dwc_hal_port_periodic_enable(port->hal);    // Enable periodic scheduling
++#if HCD_BUFFER_DMA
++    if (!port->bdma)    // In Buffer DMA mode the driver schedules periodic channels itself
++#endif
++    {
++        usb_dwc_hal_port_periodic_enable(port->hal);    // Enable periodic scheduling
++    }
+ 
+     ret = ESP_OK;
+ bailout:
+@@ -1642,6 +2404,11 @@ esp_err_t hcd_port_init(int port_number, const hcd_port_config_t *port_config, h
+     usb_dwc_hal_init(port_obj->hal, port_number);
+ #endif
+     hal_inited = true;
++#if HCD_BUFFER_DMA
++    // Split transactions need Buffer DMA mode, which only a high-speed host port needs
++    port_obj->bdma = port_obj->hal->constant_config.hsphy_type != 0 && !port_config->fsls_only;
++    port_obj->bdma_wait_mask = 0;
++#endif
+     port_obj->hal->channels.hdls = calloc(port_obj->hal->constant_config.chan_num_total, sizeof(usb_dwc_hal_chan_t *));
+     if (port_obj->hal->channels.hdls == NULL) {
+         err_ret = ESP_ERR_NO_MEM;
+@@ -2058,15 +2825,16 @@ static esp_err_t _pipe_cmd_halt(pipe_t *pipe)
+     }
+     // If the pipe's port is invalid, we just mark the pipe as halted without needing to halt the underlying channel
+     if (pipe->port->flags.conn_dev_ena // Skip halting the underlying channel if the port is invalid
+-            && !usb_dwc_hal_chan_request_halt(pipe->chan_obj)) {   // Check if the channel is already halted
++            && !_chan_request_halt(pipe)) {   // Check if the channel is already halted
+         // Channel is not halted, we need to request and wait for a haltWe need to wait for channel to be halted.
+         pipe->cs_flags.waiting_halt = 1;
+         _internal_pipe_event_wait(pipe);
++        pipe->cs_flags.waiting_halt = 0;
+         // State should have been updated in the ISR
+         assert(pipe->state == HCD_PIPE_STATE_HALTED);
+     } else {
+         // We are already halted, just need to update the state
+-        usb_dwc_hal_chan_mark_halted(pipe->chan_obj);
++        _chan_mark_halted(pipe);
+         pipe->state = HCD_PIPE_STATE_HALTED;
+     }
+     ret = ESP_OK;
+@@ -2229,6 +2997,9 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+     pipe_set_ep_char(pipe_config, type, is_default, pipe_idx, port_speed, &ep_char);
+     memcpy(&pipe->ep_char, &ep_char, sizeof(usb_dwc_hal_ep_char_t));
+     pipe->state = HCD_PIPE_STATE_ACTIVE;
++    pipe->tt_hub_addr = (port_speed == USB_SPEED_HIGH) ? pipe_config->tt_hub_addr : 0;
++    pipe->tt_port_num = pipe->tt_hub_addr ? pipe_config->tt_port_num : 0;
++    pipe->tt_ls = pipe->tt_hub_addr && pipe_config->dev_speed == USB_SPEED_LOW;
+     pipe->callback = pipe_config->callback;
+     pipe->callback_arg = pipe_config->callback_arg;
+     pipe->context = pipe_config->context;
+@@ -2248,7 +3019,7 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+         ret = ESP_ERR_NOT_SUPPORTED;
+         goto err;
+     }
+-    usb_dwc_hal_chan_set_ep_char(port->hal, pipe->chan_obj, &pipe->ep_char);
++    pipe_chan_set_ep_char(port, pipe);
+     CACHE_SYNC_FRAME_LIST(port->frame_list);
+     // Add the pipe to the list of idle pipes in the port object
+     TAILQ_INSERT_TAIL(&port->pipes_idle_tailq, pipe, tailq_entry);
+@@ -2306,6 +3077,11 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
+     // Remove pipe from the list of idle pipes (it must be in the idle list because it should have no queued URBs)
+     TAILQ_REMOVE(&pipe->port->pipes_idle_tailq, pipe, tailq_entry);
+     pipe->port->num_pipes_idle--;
++#if HCD_BUFFER_DMA
++    if (pipe->port->bdma) {
++        bd_unwait(pipe);
++    }
++#endif
+     usb_dwc_hal_chan_free(pipe->port->hal, pipe->chan_obj);
+     HCD_EXIT_CRITICAL();
+ 
+@@ -2328,7 +3104,7 @@ esp_err_t hcd_pipe_update_mps(hcd_pipe_handle_t pipe_hdl, int mps)
+                         ESP_ERR_INVALID_STATE);
+     pipe->ep_char.mps = mps;
+     // Update the underlying channel's registers
+-    usb_dwc_hal_chan_set_ep_char(pipe->port->hal, pipe->chan_obj, &pipe->ep_char);
++    pipe_chan_set_ep_char(pipe->port, pipe);
+     HCD_EXIT_CRITICAL();
+     return ESP_OK;
+ }
+@@ -2343,7 +3119,7 @@ esp_err_t hcd_pipe_update_dev_addr(hcd_pipe_handle_t pipe_hdl, uint8_t dev_addr)
+                         ESP_ERR_INVALID_STATE);
+     pipe->ep_char.dev_addr = dev_addr;
+     // Update the underlying channel's registers
+-    usb_dwc_hal_chan_set_ep_char(pipe->port->hal, pipe->chan_obj, &pipe->ep_char);
++    pipe_chan_set_ep_char(pipe->port, pipe);
+     HCD_EXIT_CRITICAL();
+     return ESP_OK;
+ }
+@@ -2659,7 +3435,7 @@ static void IRAM_ATTR _buffer_exec(pipe_t *pipe)
+     // Update buffer and multi buffer flags
+     buffer_to_exec->status_flags.executing = 1;
+     pipe->multi_buffer_control.buffer_is_executing = 1;
+-    usb_dwc_hal_chan_activate(pipe->chan_obj, buffer_to_exec->xfer_desc_list, desc_list_len, start_idx);
++    _chan_activate(pipe, buffer_to_exec->xfer_desc_list, desc_list_len, start_idx);
+ }
+ 
+ static void _buffer_exec_cont(pipe_t *pipe)
+@@ -2690,7 +3466,7 @@ static void _buffer_exec_cont(pipe_t *pipe)
+     // Continue the control transfer
+     usb_dwc_hal_chan_set_dir(pipe->chan_obj, next_dir_is_in);
+     usb_dwc_hal_chan_set_pid(pipe->chan_obj, next_pid);
+-    usb_dwc_hal_chan_activate(pipe->chan_obj, buffer_inflight->xfer_desc_list, XFER_LIST_LEN_CTRL, buffer_inflight->flags.ctrl.cur_stg);
++    _chan_activate(pipe, buffer_inflight->xfer_desc_list, XFER_LIST_LEN_CTRL, buffer_inflight->flags.ctrl.cur_stg);
+ }
+ 
+ static inline void _buffer_parse_ctrl(dma_buffer_block_t *buffer)
+diff --git a/src/hub.c b/src/hub.c
+index cff878f..3676369 100644
+--- a/src/hub.c
++++ b/src/hub.c
+@@ -196,12 +196,18 @@ static esp_err_t dev_tree_node_new(ext_hub_handle_t parent, uint8_t port_num, us
+ 
+     // Get root port handle of the new device
+     hcd_port_handle_t root_port_hdl = NULL;
++    uint8_t tt_hub_addr = 0;
++    uint8_t tt_port_num = 0;
+     if (parent == NULL) {
+         assert(port_num < HCD_NUM_PORTS);
+         root_port_hdl = p_hub_driver_obj->root_hub_ports[port_num].constant.hdl;
+     } else {
+ #ifdef ENABLE_USB_HUBS
+         root_port_hdl = ext_hub_get_root_port(parent);
++        ret = ext_hub_get_port_tt(parent, port_num, speed, &tt_hub_addr, &tt_port_num);
++        if (ret != ESP_OK) {
++            return ret;
++        }
+ #else
+         abort(); // External hub support is not enabled. parent must be NULL for root port devices
+ #endif // ENABLE_USB_HUBS
+@@ -235,6 +241,8 @@ static esp_err_t dev_tree_node_new(ext_hub_handle_t parent, uint8_t port_num, us
+         // TODO: IDF-10023 Move parent-child tree management responsibility to Hub Driver
+         .parent_dev_hdl = NULL,
+         .parent_port_num = port_num,
++        .tt_hub_addr = tt_hub_addr,
++        .tt_port_num = tt_port_num,
+     };
+ 
+     ret = usbh_devs_add(&params);
+@@ -403,6 +411,7 @@ static void ext_port_event_callback(ext_port_hdl_t port_hdl, ext_port_event_t ev
+             goto new_ds_dev_err;
+         }
+ 
++#if !CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS
+         usb_speed_t parent_speed;
+         ESP_ERROR_CHECK(ext_hub_get_speed(ext_hub_hdl, &parent_speed));
+         if (parent_speed == USB_SPEED_HIGH) {
+@@ -414,6 +423,7 @@ static void ext_port_event_callback(ext_port_hdl_t port_hdl, ext_port_event_t ev
+                 goto new_ds_dev_err;
+             }
+         }
++#endif // !CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS
+ 
+         if (dev_tree_node_new(ext_hub_hdl, port_num, port_speed) != ESP_OK) {
+             ESP_LOGE(HUB_DRIVER_TAG, "Failed to add new downstream device");
+diff --git a/src/usbh.c b/src/usbh.c
+index f9358bf..6f56c3d 100644
+--- a/src/usbh.c
++++ b/src/usbh.c
+@@ -89,6 +89,8 @@ struct device_s {
+         hcd_port_handle_t port_hdl;                 /**< HCD port handle */
+         usb_device_handle_t parent_dev_hdl;         /**< Device's parent device handle. NULL if device is connected to the root port */
+         uint8_t parent_port_num;                           /**< Device's parent port number. 0 if device connected to the root port */
++        uint8_t tt_hub_addr;                        /**< Address of the high-speed hub whose transaction translator serves this device, 0 if none */
++        uint8_t tt_port_num;                        /**< That hub's port the device is behind, 0 if none */
+         usb_speed_t speed;                          /**< Device's speed */
+         unsigned int uid;                           /**< Device's Unique ID */
+         /*
+@@ -336,6 +338,8 @@ static esp_err_t endpoint_alloc(device_t *dev_obj, const usb_ep_desc_t *ep_desc,
+         .ep_desc = ep_desc,
+         .dev_speed = dev_obj->constant.speed,
+         .dev_addr = dev_obj->constant.address,
++        .tt_hub_addr = dev_obj->constant.tt_hub_addr,
++        .tt_port_num = dev_obj->constant.tt_port_num,
+     };
+     ret = hcd_pipe_alloc(dev_obj->constant.port_hdl, &pipe_config, &pipe_hdl);
+     if (ret != ESP_OK) {
+@@ -385,6 +389,8 @@ static esp_err_t device_alloc(usbh_dev_params_t *params, device_t **dev_obj_ret)
+         .ep_desc = NULL,    // No endpoint descriptor means we're allocating a pipe for EP0
+         .dev_speed = params->speed,
+         .dev_addr = 0,
++        .tt_hub_addr = params->tt_hub_addr,
++        .tt_port_num = params->tt_port_num,
+     };
+     hcd_pipe_handle_t default_pipe_hdl;
+     ret = hcd_pipe_alloc(params->root_port_hdl, &pipe_config, &default_pipe_hdl);
+@@ -398,6 +404,8 @@ static esp_err_t device_alloc(usbh_dev_params_t *params, device_t **dev_obj_ret)
+     dev_obj->constant.port_hdl = params->root_port_hdl;
+     dev_obj->constant.parent_dev_hdl = params->parent_dev_hdl;
+     dev_obj->constant.parent_port_num = params->parent_port_num;
++    dev_obj->constant.tt_hub_addr = params->tt_hub_addr;
++    dev_obj->constant.tt_port_num = params->tt_port_num;
+     dev_obj->constant.speed = params->speed;
+     dev_obj->constant.uid = params->uid;
+     // Note: Enumeration related dev_obj->constant fields are initialized later using usbh_dev_set_...() functions
+@@ -1400,6 +1408,15 @@ esp_err_t usbh_dev_get_root_port_hdl(usb_device_handle_t dev_hdl, hcd_port_handl
+     return ESP_OK;
+ }
+ 
++esp_err_t usbh_dev_get_tt(usb_device_handle_t dev_hdl, uint8_t *tt_hub_addr, uint8_t *tt_port_num)
++{
++    USBH_CHECK(dev_hdl != NULL && tt_hub_addr != NULL && tt_port_num != NULL, ESP_ERR_INVALID_ARG);
++    device_t *dev_obj = (device_t *)dev_hdl;
++    *tt_hub_addr = dev_obj->constant.tt_hub_addr;
++    *tt_port_num = dev_obj->constant.tt_port_num;
++    return ESP_OK;
++}
++
+ esp_err_t usbh_dev_get_desc(usb_device_handle_t dev_hdl, const usb_device_desc_t **dev_desc_ret)
+ {
+     USBH_CHECK(dev_hdl != NULL && dev_desc_ret != NULL, ESP_ERR_INVALID_ARG);
