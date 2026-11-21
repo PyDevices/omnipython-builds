@@ -1397,8 +1397,9 @@ def stm32_m4_settle(image, text, pad, pad_at, relink):
 
 
 # Managed components we build from our own copy, with patches/<short name>/
-# applied: TinyUSB on the esp32 targets that build it, and esp_hosted (Wi-Fi
-# through a companion chip) on the P4. The port takes them from the IDF
+# applied: TinyUSB on the esp32 targets that build it, esp_hosted (Wi-Fi
+# through a companion chip) on the P4, and the USB host library on the P4 and
+# S31 (the full-speed S2 and S3 use ESP-IDF 5.5's own). The port takes them from the IDF
 # component manager, which fetches them into managed_components/ at
 # configure time, so the overlay can't patch them. Instead a copy at the same
 # version replaces each through the component manager's own override_path,
@@ -1415,7 +1416,7 @@ USB_HOST = "espressif__usb"
 COMPONENTS = {
     TINYUSB: (("esp32s2", "esp32s3", "esp32p4"), "espressif/tinyusb"),
     ESP_HOSTED: (("esp32p4",), "espressif/esp_hosted"),
-    USB_HOST: (("esp32s31",), "espressif/usb"),
+    USB_HOST: (("esp32p4", "esp32s31"), "espressif/usb"),
 }
 # Copies made from a download line rather than a git pin: name: download.
 COMPONENT_DOWNLOADS = {USB_HOST: "usb"}

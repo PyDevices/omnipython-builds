@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PyDevices <pydevices@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:00 -0600
+Subject: [PATCH] esp32: the USB host library from the component registry on
+ the ESP32-P4 and S31.
+
+ESP-IDF 6 moved the USB host library (usb_host) out of ESP-IDF and into
+the component registry as espressif/usb, so a user C module that hosts
+USB devices on the ESP32-S31 finds it only there. The ESP32-P4, on
+ESP-IDF 5.5, used ESP-IDF's own copy. The port's component manifest now
+names espressif/usb 1.6.1 for both high-speed chips; on ESP-IDF 5.5.3 and
+later the component replaces ESP-IDF's copy (it brings that copy's PHY
+driver along), so the two chips run the same host library and the same
+fixes. 1.4.0 added the S31, 1.6.0 lets its controller's DMA reach PSRAM,
+and 1.6.1 fixes asserts when a device or a hub is unplugged during a
+transfer. The full-speed ESP32-S2 and S3 keep ESP-IDF's copy. Nothing
+links it unless a module uses it.
+---
+ ports/esp32/main/idf_component.yml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/ports/esp32/main/idf_component.yml b/ports/esp32/main/idf_component.yml
+--- a/ports/esp32/main/idf_component.yml
++++ b/ports/esp32/main/idf_component.yml
+@@ -1,4 +1,15 @@
+ dependencies:
++  # The USB host library, for a user C module that drives USB devices, on
++  # the two chips whose host controller runs at high speed. From ESP-IDF 6
++  # it is this component and no longer part of ESP-IDF; on ESP-IDF 5.x it
++  # replaces ESP-IDF's own copy, so both chips run the same library. 1.6.0
++  # is the first to take the ESP32-S31's DMA from PSRAM; 1.6.1 fixes asserts
++  # on a device or hub unplugged mid-transfer. The full-speed ESP32-S2 and
++  # S3 keep ESP-IDF's copy. Nothing links it unless a module uses it.
++  espressif/usb:
++    version: "1.6.1"
++    rules:
++      - if: "target in [esp32p4, esp32s31]"
+   # holding off on updating mdns as newer versions have higher
+   # resource usage
+   espressif/mdns: "~1.3.0"
+-- 
+2.43.0
+

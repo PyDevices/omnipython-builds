@@ -10,11 +10,11 @@ buffer, so you can see that real audio arrived and not silence. A good run
 over a speaking voice reports no dropped packets.
 
 Needs: a board with USB host support (firmware built with usbhost) and a USB
-microphone. An ESP32-S3 needs a powered hub or OTG adapter. Behind a hub on
-an ESP32-P4, set ``FULL_SPEED = True`` below: a USB microphone is a
-full-speed device, and the P4's high-speed port can't reach one through a hub
-without a transaction translator, which the ESP-IDF host lacks. At full speed
-the hub passes it straight through.
+microphone. An ESP32-S3 needs a powered hub or OTG adapter. A USB microphone
+is a full-speed device, which an ESP32-P4's high-speed port reaches behind a
+hub with split transactions. A P4 firmware built on ESP-IDF's own USB host
+library has none: there set ``FULL_SPEED = True`` below, and the hub passes
+it straight through.
 
 Run it:
 

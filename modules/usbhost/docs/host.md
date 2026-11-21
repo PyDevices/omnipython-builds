@@ -26,9 +26,8 @@ declines interfaces, not devices, and every enumerated device keeps its
 control pipe either way -- so a hub costs two channels before carrying
 anything. Host mode is proven at full speed on the ESP32-S3, and at high
 speed on the ESP32-P4 with a webcam on a port that supplies 5 V and on the
-[ESP32-S31](#the-esp32-s31) behind a hub; behind a high-speed hub the S31
-reaches full-speed devices at high speed, and the P4 when you start the host
-with `full_speed=True` (see [below](#keyboards-and-midi-controllers-behind-a-hub-on-the-esp32-p4-and-s31)). MSC now mounts as a filesystem, read-write
+[ESP32-S31](#the-esp32-s31) behind a hub; behind a high-speed hub both
+reach full-speed devices at high speed (see [below](#keyboards-and-midi-controllers-behind-a-hub-on-the-esp32-p4-and-s31)). MSC now mounts as a filesystem, read-write
 ([`examples/usb_host_msc_simpletest.py`](../examples/usb_host_msc_simpletest.py) is the shortest, and [`examples/usb_drive_mount.py`](../examples/usb_drive_mount.py) lists a hosted stick; [`usb_drive_log.py`](../examples/usb_drive_log.py)
 appends sensor lines to one and reads them back after a remount;
 [`usb_drive_read.py`](../examples/usb_drive_read.py) reads a file end to end and checks its SHA-256), with
@@ -75,17 +74,28 @@ The P4's and the S31's host ports are high speed. Plug a keyboard, a mouse or a 
 controller into it directly and it works. Behind a high-speed hub, it's
 reached through the hub's transaction translator, with split transactions.
 
-On the S31 that just works: the keyboard, a webcam and a drive share one
-high-speed hub, each at its own speed
-([below](#the-esp32-s31)). The S31's build carries split-transaction support
-in its copy of the USB host library, which runs the controller in Buffer DMA
-mode to do it, at a few percent of bulk throughput.
+That works on both, so full-speed keyboards and MIDI controllers share a
+high-speed hub with a high-speed drive or webcam, each at its own speed. The P4 and the S31 build the
+component registry's `espressif/usb` host library (on the P4's ESP-IDF 5.5
+it replaces ESP-IDF's own copy) with a patch that adds split transactions.
+To do them it runs the controller in Buffer DMA mode, which cost the drives
+below 1 to 4 percent of their read rate.
 
-On the P4 the ESP-IDF host has no split transactions, so a full-speed device
-behind a high-speed hub doesn't enumerate, and the console shows `Connected
-device is FS, transaction translator (TT) is not supported`. Start the host at
-full speed instead, and the hub runs at full speed too and passes those
-devices straight through:
+On the Waveshare ESP32-P4-WIFI6-DEV-KIT's onboard hub at high speed, an
+Arturia KeyStep Pro (full speed, MIDI) and a PNY flash drive (high speed)
+enumerated together. The KeyStep answered 50 of 50 MIDI identity requests,
+6.9 ms at the median, between the drive's reads. The drive read 8 MB in
+64 KB commands at 12.8 MB/s, against 12.9 MB/s on ESP-IDF's own host library,
+and a 1 MiB file read back with a matching SHA-256 (2.2 MB/s write,
+4.2 MB/s read). The board's USB device on its H2 port kept carrying the REPL
+to a computer meanwhile.
+
+A P4 firmware built on ESP-IDF's own host library refuses such a device, and
+the console shows `Connected device is FS, transaction translator (TT) is not
+supported`. There, or whenever you'd rather, start the host at full speed: the
+hub then runs at full speed too and passes those devices straight through.
+On the DEV-KIT's hub that way the KeyStep enumerated and the drive read at
+0.9 MB/s:
 
 ```python
 import usb.core
@@ -93,7 +103,7 @@ import usb.core
 usb.core.start(full_speed=True)
 ```
 
-`full_speed=True` works on the S31 too. High-speed devices on the same hub still work, at full-speed bandwidth
+High-speed devices on the same hub still work then, at full-speed bandwidth
 (12 Mbit/s): a webcam negotiates a smaller or more compressed mode, and a
 flash drive copies more slowly. So leave it off when everything on the bus is
 high speed, or when the slow device is plugged straight into the port. It
@@ -125,8 +135,7 @@ board. It raises `USBError` before it touches the host, so the host that is
 running keeps running, and the message says what to do. Stopping and starting
 at the same speed works, and so does changing `classes`. The check remembers
 the speed for as long as the interpreter runs, so a soft reset forgets it.
-Choose `full_speed=True` if a keyboard or MIDI controller will sit behind the
-hub, and reset the board before you start at the other speed. If H3 sends the host straight to the lower socket the hub
+Choose the speed once, and reset the board before you start at the other one. If H3 sends the host straight to the lower socket the hub
 isn't in the path, and `usb.core.start(full_speed=..., force=True)` skips the
 check.
 
