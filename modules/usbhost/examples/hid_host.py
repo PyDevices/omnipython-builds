@@ -19,9 +19,9 @@ Needs: a board with USB host support (firmware built with usbhost) and the
 ``events`` and ``keys`` modules. The keyboard can be a commercial one or a
 board running ``usb_device_hid_simpletest.py``. An ESP32-S3 needs a powered hub
 or OTG adapter. An ESP32-P4 needs the keyboard on a host port that supplies 5 V.
-Behind a hub on a P4, set ``FULL_SPEED = True`` below: a high-speed hub can't
-reach a full-speed keyboard without a transaction translator, which the
-ESP-IDF host lacks.
+Behind a hub a P4 reaches a full-speed keyboard with split transactions; a P4
+firmware built on ESP-IDF's own USB host library has none, and there you set
+``FULL_SPEED = True`` below.
 
 Run it:
 
