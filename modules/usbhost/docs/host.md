@@ -90,6 +90,12 @@ and a 1 MiB file read back with a matching SHA-256 (2.2 MB/s write,
 4.2 MB/s read). The board's USB device on its H2 port kept carrying the REPL
 to a computer meanwhile.
 
+On the same hub, an ESP32-P4X-EYE's full-speed USB device (a CDC port from
+a Python program, with nothing else running on that board) took 256 KB at
+154 KB/s and echoed data back at 58 KB/s. A device that NAKs between
+packets is asked again a microframe later while data is moving, and once a
+millisecond while it's idle, so the device's own pace sets the rate.
+
 A P4 firmware built on ESP-IDF's own host library refuses such a device, and
 the console shows `Connected device is FS, transaction translator (TT) is not
 supported`. There, or whenever you'd rather, start the host at full speed: the
