@@ -87,5 +87,10 @@ void usbhost_stream_stop_itf(void *dev, int itf, bool device_gone);
 void usbhost_stream_close_all(void);
 // Bit i set: slot i holds no stream. mod_usbhost.c lets go of its rings by it.
 uint32_t usbhost_stream_free_slots(void);
+// Stop every running stream on the ring whose C surface is `ctx`, so its
+// storage can be freed: afterwards no transfer reaches it. A ring's
+// finaliser calls this, because a soft reset finalises every object in heap
+// order, and the ring can go before the host does.
+void usbhost_stream_close_ring(const void *ctx);
 
 #endif // USBHOST_HOST_STREAM_H

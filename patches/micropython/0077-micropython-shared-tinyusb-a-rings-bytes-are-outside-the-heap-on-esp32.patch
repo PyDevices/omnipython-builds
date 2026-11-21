@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 00:00:00 -0600
+Subject: [PATCH] shared/tinyusb: on ESP-IDF a Ring's bytes are outside the
+ heap.
+
+A USBDevice.Ring kept its bytes in the Python heap. The collector reads
+every word of every block it can reach, in case one is a pointer, so a ring
+of a few megabytes, two frames of video for a USB host's camera, made each
+collection take hundreds of milliseconds, and needed that much of the heap
+in one piece. On an ESP32-S31 a 4 MB ring for a 1280x720 camera made
+gc.collect() take about 300 ms, often enough under an ordinary program's
+allocations to cut the camera from 15 to 10 frames a second.
+
+On ESP-IDF the bytes now come from PSRAM where there is some (internal RAM
+otherwise, and on the ESP32-P4 a ring of up to 64 KB is still in internal
+RAM for the transfer interrupt), and go back when the Ring is collected or
+at a soft reset. A device stream holds its ring while it runs and is
+stopped before a soft reset finalises anything; another module streaming
+into a ring is told before its bytes go (mp_usbd_ring_free_hook), since a
+soft reset finalises objects in heap order. Other ports keep the heap.
+---
+--- a/shared/tinyusb/mp_usbd.h	2026-11-21 07:18:54.116142031 -0600
++++ b/shared/tinyusb/mp_usbd.h	2026-11-21 07:19:34.811210919 -0600
+@@ -218,6 +218,11 @@
+ void mp_usbd_ring_commit(void *ring, uint32_t n);
+ // Count an overflow the producer decided on itself (a record dropped).
+ void mp_usbd_ring_overflow(void *ring);
++// Called with the ring before its storage is freed, when that storage is
++// outside the heap: a producer or consumer in another module stops using it
++// here. A soft reset finalises objects in heap order, so a ring can go
++// before whatever was streaming into it. NULL for none.
++extern void (*mp_usbd_ring_free_hook)(void *ring);
+ 
+ // Built-in constant objects, possible values of builtin_driver
+ //
+--- a/shared/tinyusb/mp_usbd_runtime.c	2026-11-21 07:18:54.111963095 -0600
++++ b/shared/tinyusb/mp_usbd_runtime.c	2026-11-21 07:19:44.840177063 -0600
+@@ -29,6 +29,7 @@
+ 
+ #include "mp_usbd.h"
+ #include "py/mpconfig.h"
++#include "py/gc.h"
+ #include "py/mperrno.h"
+ #include "py/mphal.h"
+ #include "py/obj.h"
+@@ -456,6 +457,22 @@
+ #define isr_reaches(p) (true)
+ #endif
+ 
++// On ESP-IDF a Ring's bytes are outside the Python heap, in PSRAM where there
++// is some (or internal RAM, see above). The collector reads every word of every
++// block it can reach, in case one is a pointer, so a ring of a few megabytes
++// there (two video frames) made each collection take hundreds of
++// milliseconds, and needed that much of the heap in one piece. The bytes go
++// back when the Ring is collected or at a soft reset (its finaliser). Other
++// ports keep them in the heap.
++#if defined(ESP_PLATFORM)
++#define MP_USBD_RING_OFF_HEAP (1)
++#if !MP_USBD_ISR_IN_IRAM
++#include "esp_heap_caps.h"
++#endif
++#else
++#define MP_USBD_RING_OFF_HEAP (0)
++#endif
++
+ // What the interrupt touches. It lives apart from the Python object, so that
+ // it can be in internal RAM (see above).
+ typedef struct {
+@@ -469,10 +486,11 @@
+ 
+ typedef struct _mp_usbd_ring_obj_t {
+     mp_obj_base_t base;
+-    mp_usbd_ring_t *r;
+-    uint8_t *heap_buf;          // keeps a buf in the heap reachable when r isn't
++    mp_usbd_ring_t *r;          // NULL once freed (off the heap)
+ } mp_usbd_ring_obj_t;
+ 
++void (*mp_usbd_ring_free_hook)(void *ring);
++
+ static MP_USBD_ISR_ATTR uint32_t ring_used(mp_usbd_ring_t *r) {
+     return r->head - r->tail;
+ }
+@@ -554,6 +572,39 @@
+     RING_OF(ring)->overflows++;
+ }
+ 
++#if MP_USBD_RING_OFF_HEAP
++// A ring's state and bytes, outside the heap; NULL if they can't be had.
++static mp_usbd_ring_t *ring_alloc(uint32_t size) {
++    mp_usbd_ring_t *r;
++    #if MP_USBD_ISR_IN_IRAM
++    if (size <= MP_USBD_RING_INTERNAL_MAX) {
++        r = heap_caps_malloc(sizeof(mp_usbd_ring_t) + size, MP_USBD_INTERNAL);
++        if (r != NULL) {
++            r->buf = (uint8_t *)(r + 1);
++            return r;
++        }
++    }
++    #endif
++    r = heap_caps_malloc(sizeof(mp_usbd_ring_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
++    if (r == NULL) {
++        return NULL;
++    }
++    r->buf = heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
++    if (r->buf == NULL) {
++        heap_caps_free(r);
++        return NULL;
++    }
++    return r;
++}
++
++static void ring_free(mp_usbd_ring_t *r) {
++    if (r->buf != (uint8_t *)(r + 1)) {
++        heap_caps_free(r->buf);
++    }
++    heap_caps_free(r);
++}
++#endif
++
+ // USBDevice.Ring(nbytes): rounded up to a power of two.
+ static mp_obj_t mp_usbd_ring_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+     mp_arg_check_num(n_args, n_kw, 1, 1, false);
+@@ -565,23 +616,18 @@
+     while (size < (uint32_t)want) {
+         size <<= 1;
+     }
+-    #if MP_USBD_ISR_IN_IRAM
++    #if MP_USBD_RING_OFF_HEAP
+     mp_usbd_ring_obj_t *self = mp_obj_malloc_with_finaliser(mp_usbd_ring_obj_t, type);
+     self->r = NULL;
+-    self->heap_buf = NULL;
+-    mp_usbd_ring_t *r = NULL;
+-    if (size <= MP_USBD_RING_INTERNAL_MAX) {
+-        r = heap_caps_malloc(sizeof(mp_usbd_ring_t) + size, MP_USBD_INTERNAL);
+-    }
+-    if (r != NULL) {
+-        r->buf = (uint8_t *)(r + 1);
+-    } else {
+-        self->heap_buf = m_new(uint8_t, size);
+-        r = heap_caps_malloc(sizeof(mp_usbd_ring_t), MP_USBD_INTERNAL);
+-        if (r == NULL) {
+-            m_malloc_fail(sizeof(mp_usbd_ring_t));
+-        }
+-        r->buf = self->heap_buf;
++    mp_usbd_ring_t *r = ring_alloc(size);
++    if (r == NULL) {
++        // Rings nobody holds keep their bytes until their finalisers run.
++        gc_collect();
++        r = ring_alloc(size);
++    }
++    if (r == NULL) {
++        mp_raise_msg_varg(&mp_type_MemoryError,
++            MP_ERROR_TEXT("can't allocate a %u-byte ring outside the heap"), (uint)size);
+     }
+     self->r = r;
+     #else
+@@ -589,18 +635,25 @@
+     mp_usbd_ring_t *r = m_new_obj(mp_usbd_ring_t);
+     r->buf = m_new(uint8_t, size);
+     self->r = r;
+-    self->heap_buf = NULL;
+     #endif
+     r->mask = size - 1;
+     r->head = r->tail = r->overflows = r->underflows = 0;
+     return MP_OBJ_FROM_PTR(self);
+ }
+ 
+-#if MP_USBD_ISR_IN_IRAM
++#if MP_USBD_RING_OFF_HEAP
++// A device stream is stopped before a soft reset finalises anything
++// (mp_usbd_deinit), and holds its ring while it runs. Another module's
++// stream may not be, so the hook stops it first.
+ static mp_obj_t mp_usbd_ring_del(mp_obj_t self_in) {
+     mp_usbd_ring_obj_t *self = MP_OBJ_TO_PTR(self_in);
+-    heap_caps_free(self->r);
+-    self->r = NULL;
++    if (self->r != NULL) {
++        if (mp_usbd_ring_free_hook != NULL) {
++            mp_usbd_ring_free_hook(self);
++        }
++        ring_free(self->r);
++        self->r = NULL;
++    }
+     return mp_const_none;
+ }
+ static MP_DEFINE_CONST_FUN_OBJ_1(mp_usbd_ring_del_obj, mp_usbd_ring_del);
+@@ -658,7 +711,7 @@
+     { MP_ROM_QSTR(MP_QSTR_readinto), MP_ROM_PTR(&mp_usbd_ring_readinto_obj) },
+     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&mp_usbd_ring_write_obj) },
+     { MP_ROM_QSTR(MP_QSTR_stats), MP_ROM_PTR(&mp_usbd_ring_stats_obj) },
+-    #if MP_USBD_ISR_IN_IRAM
++    #if MP_USBD_RING_OFF_HEAP
+     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&mp_usbd_ring_del_obj) },
+     #endif
+ };

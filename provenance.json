@@ -229,6 +229,9 @@
   },
   "0076-micropython-extmod-websocket-finish-a-frame-before-anything-else-is-sent.patch": {
    "sha256": "e214e25b8a1c6116ebc35e2e0f6ddc139b5ad0bb50da5e32a33dd61f2f51365d"
+  },
+  "0077-micropython-shared-tinyusb-a-rings-bytes-are-outside-the-heap-on-esp32.patch": {
+   "sha256": "52cc2e5640ee8ee917e88e11f5b239cb99a689ec15c69c77a6da32cb0b886d9a"
   }
  },
  "tinyusb_patches": {
