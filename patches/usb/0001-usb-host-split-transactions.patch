@@ -31,10 +31,31 @@ the halt lands completes short with them instead of being canceled. A bulk
 or control complete split that sees a transaction error is asked again, as
 the translator keeps the result until it is collected.
 
+A bulk or control split the device NAKs is asked again in the next frame,
+so an idle endpoint costs one retry a millisecond. For the first few NAKs
+after data moved it is asked again a microframe later instead: a device
+that NAKs between packets, as one whose firmware arms its endpoint a packet
+at a time does, would otherwise be held to one packet a millisecond.
+
+Isochronous splits run one packet per frame. An OUT packet goes to the
+translator as start splits of up to 188 bytes in consecutive microframes
+(BEGIN, MID..., END, or ALL when it fits in one). An IN packet is asked for
+with one start split, and complete splits from two microframes later collect
+it: NYET while nothing has arrived yet, MDATA with each part while more is to
+come. Each part lands in a buffer of the pipe's own and is copied on, since
+the translator's part sizes can leave the next one at an address the DMA
+can't write to.
+
+The translator's full-speed frame is budgeted. Each periodic endpoint behind
+a translator is charged its worst-case bus time (USB 2.0, 5.11.3) against
+90% of the frame, and each isochronous endpoint is given microframes of its
+own for what the translator runs for it, 188 bytes to a microframe, so an IN
+and an OUT stream don't collide in the translator. A pipe that doesn't fit is
+refused with ESP_ERR_NOT_SUPPORTED and an error log saying why.
+
 Not done: Clear_TT_Buffer after a failed split to a translator's bulk or
-control endpoint, isochronous OUT splits of more than 188 bytes
-(multiple start splits), and the bandwidth budgeting of the translator's
-full-speed frame.
+control endpoint. The budget charges every periodic endpoint in every frame,
+whatever its interval, and a translator serves one isochronous OUT endpoint.
 ---
 diff --git a/Kconfig b/Kconfig
 index 29c9a68..9680951 100644
@@ -61,32 +82,13 @@ index 29c9a68..9680951 100644
      config USB_OTG_SUPPORTED
          # Invisible config kept for compatibility
 diff --git a/private_include/ext_hub.h b/private_include/ext_hub.h
-index aee4f6e..ed1ff85 100644
+index aee4f6e..7d19b1b 100644
 --- a/private_include/ext_hub.h
 +++ b/private_include/ext_hub.h
-@@ -106,6 +106,44 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed);
+@@ -106,6 +106,25 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed);
   */
  hcd_port_handle_t ext_hub_get_root_port(ext_hub_handle_t ext_hub_hdl);
  
-+/**
-+ * @brief Send a Clear_TT_Buffer request to a high-speed hub's transaction translator
-+ *
-+ * Clears the translator's buffer that a failed bulk or control split transaction may have left busy (USB 2.0,
-+ * 11.24.2.3). The request is sent on the hub's control pipe on its own transfer, after any sent before it; a control
-+ * endpoint's buffer is cleared for both directions.
-+ *
-+ * @note Called from the USB Host Library's task, like the rest of the External Hub Driver's processing
-+ *
-+ * @param[in] hub_addr Address of the hub
-+ * @param[in] value wValue: the endpoint's number (bits 3..0), device address (10..4), type (12..11) and direction (15)
-+ *
-+ * @return
-+ *    - ESP_ERR_NOT_FOUND if no configured hub has that address
-+ *    - ESP_ERR_NO_MEM if the transfer could not be allocated
-+ *    - ESP_OK if the request was queued
-+ */
-+esp_err_t ext_hub_clear_tt_buffer(uint8_t hub_addr, uint16_t value);
-+
 +/**
 + * @brief Get the transaction translator that serves a device on one of an External Hub's ports
 + *
@@ -110,10 +112,10 @@ index aee4f6e..ed1ff85 100644
   * @brief Add new device
   *
 diff --git a/private_include/hcd.h b/private_include/hcd.h
-index 42cf016..022bade 100644
+index 42cf016..c16287d 100644
 --- a/private_include/hcd.h
 +++ b/private_include/hcd.h
-@@ -195,8 +195,19 @@ typedef struct {
+@@ -195,6 +195,8 @@ typedef struct {
      const usb_ep_desc_t *ep_desc;           /**< Pointer to endpoint descriptor of the pipe */
      usb_speed_t dev_speed;                  /**< Speed of the device */
      uint8_t dev_addr;                       /**< Device address of the pipe */
@@ -121,38 +123,7 @@ index 42cf016..022bade 100644
 +    uint8_t tt_port_num;                    /**< That hub's port the device is behind (1-based), 0 if none */
  } hcd_pipe_config_t;
  
-+/**
-+ * @brief A Clear_TT_Buffer request a transaction translator is owed (USB 2.0, 11.24.2.3)
-+ */
-+typedef struct {
-+    uint8_t hub_addr;       /**< Address of the high-speed hub whose translator it is */
-+    uint8_t tt_port;        /**< The hub's port the failed transfer's device is behind */
-+    uint16_t value;         /**< wValue: the endpoint's number, device address, type and direction */
-+} hcd_tt_clear_t;
-+
  // ---------------------------------------------------- HCD Port -------------------------------------------------------
- 
- /**
-@@ -281,6 +292,19 @@ hcd_port_state_t hcd_port_get_state(hcd_port_handle_t port_hdl);
-  */
- esp_err_t hcd_port_get_speed(hcd_port_handle_t port_hdl, usb_speed_t *speed);
- 
-+/**
-+ * @brief Take the next Clear_TT_Buffer request the port owes a transaction translator
-+ *
-+ * A bulk or control transfer to a device behind a translator that fails with transaction errors can leave its
-+ * transaction in the translator's buffer. The port then calls its callback (with HCD_PORT_EVENT_NONE, if it has no
-+ * other event), and the hub driver takes each request with this and sends it to the translator's hub.
-+ *
-+ * @param[in] port_hdl Port handle
-+ * @param[out] tt_clear The request
-+ * @return true if a request was taken
-+ */
-+bool hcd_port_get_tt_clear(hcd_port_handle_t port_hdl, hcd_tt_clear_t *tt_clear);
-+
- /**
-  * @brief Handle a ports event
-  *
 diff --git a/private_include/usbh.h b/private_include/usbh.h
 index 5d66f3f..e00b63e 100644
 --- a/private_include/usbh.h
@@ -187,168 +158,13 @@ index 5d66f3f..e00b63e 100644
   * @brief Get a device's device descriptor
   *
 diff --git a/src/ext_hub.c b/src/ext_hub.c
-index ed4b4ba..51da12c 100644
+index ed4b4ba..d9a715a 100644
 --- a/src/ext_hub.c
 +++ b/src/ext_hub.c
-@@ -84,8 +84,11 @@ typedef enum {
-     DEV_ACTION_ERROR                    = (1 << 6),  /**< Device encounters an error */
-     DEV_ACTION_RELEASE                  = (1 << 7),  /**< Device should be released */
-     DEV_ACTION_FREE                     = (1 << 8),  /**< Device should be freed */
-+    DEV_ACTION_TT_CLEAR                 = (1 << 9),  /**< Device's Clear_TT_Buffer request completed */
- } dev_action_t;
- 
-+#define EXT_HUB_TT_CLEARS_MAX           8   /**< Clear_TT_Buffer requests a hub holds while one is on its way */
-+
- typedef struct ext_hub_s ext_hub_dev_t;
- 
- /**
-@@ -119,6 +122,9 @@ struct ext_hub_s {
-         ext_hub_stage_t stage;                      /**< Device's stage */
-         uint8_t maxchild;                           /**< Amount of allocated ports. Could be 0 for some Hubs. Is increased when new port is added and decreased when port has been freed. */
-         ext_hub_state_t state;                      /**< Device's state */
-+        uint16_t tt_values[EXT_HUB_TT_CLEARS_MAX];  /**< Clear_TT_Buffer requests waiting to be sent (wValue each) */
-+        uint8_t tt_num;                             /**< How many wait */
-+        bool tt_busy;                               /**< A Clear_TT_Buffer request is on its way */
-     } single_thread;                                /**< Single thread members don't require a critical section, as long as they are never accessed from multiple threads */
- 
-     struct {
-@@ -129,6 +135,8 @@ struct ext_hub_s {
-         usb_device_handle_t dev_hdl;                /**< Device's handle */
-         urb_t *ctrl_urb;                            /**< Device's Control pipe transfer URB */
-         urb_t *in_urb;                              /**< Device's Interrupt pipe URB */
-+        urb_t *tt_urb;                              /**< Clear_TT_Buffer requests' URB, allocated at the first. Kept apart from
-+                                                         ctrl_urb, which the hub's own requests use, so it can go between them */
-         usbh_ep_handle_t ep_in_hdl;                 /**< Device's Interrupt EP handle */
- 
-         usb_hub_descriptor_t *hub_desc;             /**< Device's Hub descriptor pointer. Could be NULL when not requested */
-@@ -256,6 +264,19 @@ static void control_transfer_complete_cb(usb_transfer_t *ctrl_xfer)
-     }
- }
- 
-+static void tt_clear_complete_cb(usb_transfer_t *tt_xfer)
-+{
-+    ext_hub_dev_t *ext_hub_dev = (ext_hub_dev_t *) tt_xfer->context;
-+
-+    EXT_HUB_ENTER_CRITICAL();
-+    bool call_proc_req_cb = _device_set_actions(ext_hub_dev, DEV_ACTION_TT_CLEAR);
-+    EXT_HUB_EXIT_CRITICAL();
-+
-+    if (call_proc_req_cb) {
-+        p_ext_hub_driver->constant.proc_req_cb(false, p_ext_hub_driver->constant.proc_req_cb_arg);
-+    }
-+}
-+
- static void interrupt_transfer_complete_cb(usb_transfer_t *intr_xfer)
- {
-     assert(intr_xfer);
-@@ -784,9 +805,58 @@ static void device_free(ext_hub_dev_t *ext_hub_dev)
- 
-     urb_free(ext_hub_dev->constant.ctrl_urb);
-     urb_free(ext_hub_dev->constant.in_urb);
-+    if (ext_hub_dev->constant.tt_urb != NULL && !ext_hub_dev->single_thread.tt_busy) {
-+        urb_free(ext_hub_dev->constant.tt_urb);
-+    }
-     heap_caps_free(ext_hub_dev);
- }
- 
-+/**
-+ * @brief Send the next waiting Clear_TT_Buffer request, if none is on its way
-+ */
-+static void tt_clear_send_next(ext_hub_dev_t *ext_hub_dev)
-+{
-+    if (ext_hub_dev->single_thread.tt_busy || ext_hub_dev->single_thread.tt_num == 0
-+            || ext_hub_dev->dynamic.flags.is_gone || ext_hub_dev->dynamic.flags.waiting_release
-+            || ext_hub_dev->dynamic.flags.waiting_free) {
-+        return;
-+    }
-+    uint16_t value = ext_hub_dev->single_thread.tt_values[0];
-+    ext_hub_dev->single_thread.tt_num--;
-+    memmove(&ext_hub_dev->single_thread.tt_values[0], &ext_hub_dev->single_thread.tt_values[1],
-+            ext_hub_dev->single_thread.tt_num * sizeof(uint16_t));
-+    usb_transfer_t *transfer = &ext_hub_dev->constant.tt_urb->transfer;
-+    usb_setup_packet_t *setup = (usb_setup_packet_t *)transfer->data_buffer;
-+    setup->bmRequestType = USB_BM_REQUEST_TYPE_DIR_OUT | USB_BM_REQUEST_TYPE_TYPE_CLASS | USB_BM_REQUEST_TYPE_RECIP_OTHER;
-+    setup->bRequest = USB_B_REQUEST_HUB_CLEAR_TT_BUFFER;
-+    setup->wValue = value;
-+    setup->wIndex = 1;  // A single translator (the hub's default interface setting), named 1
-+    setup->wLength = 0;
-+    transfer->num_bytes = sizeof(usb_setup_packet_t);
-+    ext_hub_dev->single_thread.tt_busy = true;
-+    esp_err_t ret = usbh_dev_submit_ctrl_urb(ext_hub_dev->constant.dev_hdl, ext_hub_dev->constant.tt_urb);
-+    if (ret != ESP_OK) {
-+        ext_hub_dev->single_thread.tt_busy = false;
-+        ESP_LOGE(EXT_HUB_TAG, "[%d] Clear_TT_Buffer 0x%04x: failed to submit: %s", ext_hub_dev->constant.dev_addr, value,
-+                 esp_err_to_name(ret));
-+    }
-+}
-+
-+static void handle_tt_clear(ext_hub_dev_t *ext_hub_dev)
-+{
-+    usb_transfer_t *transfer = &ext_hub_dev->constant.tt_urb->transfer;
-+    const usb_setup_packet_t *setup = (const usb_setup_packet_t *)transfer->data_buffer;
-+    ext_hub_dev->single_thread.tt_busy = false;
-+    if (transfer->status == USB_TRANSFER_STATUS_COMPLETED) {
-+        ESP_LOGI(EXT_HUB_TAG, "[%d] Cleared the translator's buffer for device %d EP %d", ext_hub_dev->constant.dev_addr,
-+                 (setup->wValue >> 4) & 0x7F, setup->wValue & 0x0F);
-+    } else {
-+        ESP_LOGW(EXT_HUB_TAG, "[%d] Clear_TT_Buffer 0x%04x: status %d", ext_hub_dev->constant.dev_addr, setup->wValue,
-+                 transfer->status);
-+    }
-+    tt_clear_send_next(ext_hub_dev);
-+}
-+
- static bool dev_is_in_list(ext_hub_dev_t *ext_hub_dev)
- {
-     bool is_in_list = false;
-@@ -1324,6 +1394,72 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed)
+@@ -1324,6 +1324,27 @@ esp_err_t ext_hub_get_speed(ext_hub_handle_t ext_hub_hdl, usb_speed_t *speed)
      return ESP_OK;
  }
  
-+esp_err_t ext_hub_clear_tt_buffer(uint8_t hub_addr, uint16_t value)
-+{
-+    EXT_HUB_ENTER_CRITICAL();
-+    EXT_HUB_CHECK_FROM_CRIT(p_ext_hub_driver != NULL, ESP_ERR_NOT_ALLOWED);
-+    ext_hub_dev_t *ext_hub_dev = NULL;
-+    ext_hub_dev_t *hub;
-+    TAILQ_FOREACH(hub, &p_ext_hub_driver->dynamic.ext_hubs_tailq, dynamic.tailq_entry) {
-+        if (hub->constant.dev_addr == hub_addr) {
-+            ext_hub_dev = hub;
-+        }
-+    }
-+    TAILQ_FOREACH(hub, &p_ext_hub_driver->dynamic.ext_hubs_pending_tailq, dynamic.tailq_entry) {
-+        if (hub->constant.dev_addr == hub_addr) {
-+            ext_hub_dev = hub;
-+        }
-+    }
-+    EXT_HUB_EXIT_CRITICAL();
-+    EXT_HUB_CHECK(ext_hub_dev != NULL, ESP_ERR_NOT_FOUND);
-+    EXT_HUB_CHECK(ext_hub_dev->single_thread.state == EXT_HUB_STATE_CONFIGURED, ESP_ERR_INVALID_STATE);
-+
-+    if (ext_hub_dev->constant.tt_urb == NULL) {
-+        ext_hub_dev->constant.tt_urb = urb_alloc(sizeof(usb_setup_packet_t), 0);
-+        EXT_HUB_CHECK(ext_hub_dev->constant.tt_urb != NULL, ESP_ERR_NO_MEM);
-+        // Client is a memory address of the p_ext_hub_driver driver object, as for the hub's other transfers
-+        ext_hub_dev->constant.tt_urb->usb_host_client = (void *) p_ext_hub_driver;
-+        ext_hub_dev->constant.tt_urb->transfer.callback = tt_clear_complete_cb;
-+        ext_hub_dev->constant.tt_urb->transfer.context = (void *)ext_hub_dev;
-+        ext_hub_dev->constant.tt_urb->transfer.timeout_ms = 1000;
-+    }
-+    // A control endpoint's translator buffer is cleared for both directions (as Linux does)
-+    const bool ctrl = ((value >> 11) & 3) == 0;
-+    for (int dir = 0; dir < (ctrl ? 2 : 1); dir++) {
-+        uint16_t v = dir ? (value ^ 0x8000) : value;
-+        bool waiting = false;
-+        for (int i = 0; i < ext_hub_dev->single_thread.tt_num; i++) {
-+            waiting |= ext_hub_dev->single_thread.tt_values[i] == v;
-+        }
-+        if (!waiting && ext_hub_dev->single_thread.tt_num < EXT_HUB_TT_CLEARS_MAX) {
-+            ext_hub_dev->single_thread.tt_values[ext_hub_dev->single_thread.tt_num++] = v;
-+        }
-+    }
-+    tt_clear_send_next(ext_hub_dev);
-+    return ESP_OK;
-+}
-+
 +esp_err_t ext_hub_get_port_tt(ext_hub_handle_t ext_hub_hdl, uint8_t port_num, usb_speed_t port_speed, uint8_t *tt_hub_addr, uint8_t *tt_port_num)
 +{
 +    EXT_HUB_CHECK(ext_hub_hdl != NULL && tt_hub_addr != NULL && tt_port_num != NULL, ESP_ERR_INVALID_ARG);
@@ -373,27 +189,16 @@ index ed4b4ba..51da12c 100644
  hcd_port_handle_t ext_hub_get_root_port(ext_hub_handle_t ext_hub_hdl)
  {
      EXT_HUB_CHECK(ext_hub_hdl != NULL, NULL);
-@@ -1532,6 +1668,9 @@ esp_err_t ext_hub_process(void)
-         if (action_flags & DEV_ACTION_EP1_CLEAR) {
-             handle_ep1_clear(ext_hub_dev);
-         }
-+        if (action_flags & DEV_ACTION_TT_CLEAR) {
-+            handle_tt_clear(ext_hub_dev);
-+        }
-         if (action_flags & DEV_ACTION_ERROR) {
-             handle_error(ext_hub_dev);
-         }
 diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
-index b7100e4..cd60de9 100644
+index b7100e4..34ef4a2 100644
 --- a/src/hcd_dwc.c
 +++ b/src/hcd_dwc.c
-@@ -143,6 +143,13 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
+@@ -143,6 +143,12 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
  #define CACHE_SYNC_DATA_BUFFER_C2M(pipe, urb)
  #endif // CACHED_MEMORY_SYNC
  
 +#if CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS
 +#define HCD_BUFFER_DMA                              1
-+#define HCD_TT_CLEARS_MAX                           4   // Clear_TT_Buffer requests a port holds for its hub driver
 +#else
 +#define HCD_BUFFER_DMA                              0
 +#endif
@@ -401,7 +206,7 @@ index b7100e4..cd60de9 100644
  // ------------------------------------------------------ Types --------------------------------------------------------
  
  typedef struct pipe_obj pipe_t;
-@@ -192,6 +199,38 @@ typedef struct {
+@@ -192,6 +198,39 @@ typedef struct {
      } status_flags;                         // Status flags for the buffer
  } dma_buffer_block_t;
  
@@ -428,6 +233,7 @@ index b7100e4..cd60de9 100644
 +    uint32_t run_pkts;              // Packets the channel was started with
 +    uint8_t errors;                 // Consecutive transaction errors
 +    uint8_t nyets;                  // Complete splits answered NYET
++    uint8_t quick_naks;             // Split NAKs still retried in the next microframe rather than the next frame
 +    uint16_t at;                    // Isochronous split: the microframe the next run waits for (with at_set)
 +    bd_state_t state;
 +    uint8_t csplit: 1;              // The next run is a complete split
@@ -459,22 +265,18 @@ index b7100e4..cd60de9 100644
      // Port related
      port_t *port;                           // The port to which this pipe is routed through
      TAILQ_ENTRY(pipe_obj) tailq_entry;      // TailQ entry for port's list of pipes
-@@ -279,6 +330,14 @@ struct port_obj {
+@@ -279,6 +330,10 @@ struct port_obj {
      SemaphoreHandle_t port_mux;
      void *context;
      intr_handle_t isr_hdl;       // Interrupt handle for this root port (USB-OTG peripheral)
 +#if HCD_BUFFER_DMA
 +    bool bdma;                   // The port runs in Buffer DMA mode (split transactions)
 +    uint32_t bdma_wait_mask;     // Channels waiting for a (micro)frame to start in
-+    // Clear_TT_Buffer requests owed to translators whose bulk or control split failed (see hcd_port_get_tt_clear())
-+    hcd_tt_clear_t tt_clears[HCD_TT_CLEARS_MAX];
-+    uint8_t tt_clears_num;
-+    bool tt_clears_notify;       // The port's callback is still to be told
 +#endif
  };
  
  // With s_port_inited[] we can check if a port has been initialized -> to provide singleton handle for each root port
-@@ -888,6 +947,725 @@ static usb_speed_t get_usb_port_speed(usb_dwc_speed_t priv)
+@@ -888,6 +943,695 @@ static usb_speed_t get_usb_port_speed(usb_dwc_speed_t priv)
      }
  }
  
@@ -524,6 +326,7 @@ index b7100e4..cd60de9 100644
 +
 +#define BD_MAX_ERRORS           3   // Consecutive transaction errors before a transfer fails
 +#define BD_MAX_CSPLIT_NYETS     6   // Periodic complete splits answered NYET before the (micro)frame is given up
++#define BD_QUICK_NAKS           8   // Bulk and control split NAKs retried a microframe later, after data moved
 +#define BD_TT_UFRAME_BYTES      188 // The most a translator takes of an OUT payload in one microframe
 +#define BD_ISOC_CSPLIT_FIRST    2   // Microframes from an isochronous IN start split to its first complete split
 +#define BD_ISOC_CSPLIT_LAST     7   // The last microframe of the frame an isochronous IN complete split may run in
@@ -718,40 +521,8 @@ index b7100e4..cd60de9 100644
 +    return event;
 +}
 +
-+/**
-+ * @brief A bulk or control split ended in transaction errors: the translator may still hold the transaction in its
-+ * buffer, where it would wait for a complete split that never comes. Owe the translator a Clear_TT_Buffer request
-+ * (USB 2.0, 11.24.2.3), which the hub driver sends on the translator's hub's control pipe.
-+ */
-+static void bd_owe_tt_clear(pipe_t *pipe)
-+{
-+    port_t *port = pipe->port;
-+    const usb_dwc_hal_ep_char_t *ep = &pipe->ep_char;
-+    const bool is_in = (ep->type == USB_DWC_XFER_TYPE_CTRL) ? false : (ep->bEndpointAddress & USB_B_ENDPOINT_ADDRESS_EP_DIR_MASK);
-+    const uint16_t ep_type = (ep->type == USB_DWC_XFER_TYPE_CTRL) ? 0 : 2;
-+    const uint16_t value = (ep->bEndpointAddress & 0x0F) | ((ep->dev_addr & 0x7F) << 4) | (ep_type << 11)
-+                           | (is_in ? (1U << 15) : 0);
-+    for (int i = 0; i < port->tt_clears_num; i++) {
-+        if (port->tt_clears[i].hub_addr == pipe->tt_hub_addr && port->tt_clears[i].value == value) {
-+            return;     // Already owed
-+        }
-+    }
-+    if (port->tt_clears_num >= HCD_TT_CLEARS_MAX) {
-+        return;         // The hub driver is behind; the oldest requests will clear what they can
-+    }
-+    port->tt_clears[port->tt_clears_num++] = (hcd_tt_clear_t) {
-+        .hub_addr = pipe->tt_hub_addr,
-+        .tt_port = pipe->tt_port_num,
-+        .value = value,
-+    };
-+    port->tt_clears_notify = true;
-+}
-+
 +static inline usb_dwc_hal_chan_event_t bd_error(pipe_t *pipe, usb_dwc_hal_chan_error_t error)
 +{
-+    if (error == USB_DWC_HAL_CHAN_ERROR_XCS_XACT && pipe->tt_hub_addr != 0 && !bd_is_periodic(pipe)) {
-+        bd_owe_tt_clear(pipe);
-+    }
 +    pipe->chan_obj->error = error;
 +    return bd_end(pipe, USB_DWC_HAL_CHAN_EVENT_ERROR, pipe->bdma.idx);
 +}
@@ -939,6 +710,7 @@ index b7100e4..cd60de9 100644
 +    bd->done = 0;
 +    bd->errors = 0;
 +    bd->nyets = 0;
++    bd->quick_naks = BD_QUICK_NAKS;
 +    bd->csplit = 0;
 +    bd->ping = 0;
 +    bd->halt_req = 0;
@@ -1098,7 +870,7 @@ index b7100e4..cd60de9 100644
 +                bd->errors = 0;
 +                return bd_go_on(pipe, true);
 +            }
-+            // NAK (or NYET): the translator's buffer is busy. Try again in the next frame.
++            // NAK (or NYET): the translator's buffer is busy. Try again in the next frame (bd_sof() says when).
 +            return bd_go_on(pipe, false);
 +        }
 +        if (hcint & USB_DWC_LL_INTR_CHAN_NYET) {
@@ -1108,12 +880,11 @@ index b7100e4..cd60de9 100644
 +                bd->nyets = 0;
 +                return bd_go_on(pipe, false);
 +            }
-+            // Ask again in the next microframe (a periodic channel is started for it now; a bulk or control one
-+            // waits for its start of frame interrupt). Asking at once would only be answered NYET again.
-+            return bd_go_on(pipe, periodic);
++            return bd_go_on(pipe, true);
 +        }
 +        if ((hcint & USB_DWC_LL_INTR_CHAN_NAK) && !(hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL)) {
-+            // The device NAKed: start over in the next frame (the next interval for a periodic endpoint)
++            // The device NAKed: start over in the next frame (bd_sof() says when), or the next interval for a
++            // periodic endpoint
 +            bd->csplit = 0;
 +            bd->nyets = 0;
 +            return bd_go_on(pipe, false);
@@ -1122,6 +893,7 @@ index b7100e4..cd60de9 100644
 +            bd->csplit = 0;
 +            bd->nyets = 0;
 +            bd->errors = 0;
++            bd->quick_naks = BD_QUICK_NAKS;
 +            bd->done += is_in ? moved : bd->run_len;
 +            bool short_in = is_in && moved < mps;
 +            uint32_t size = bd_qtd(pipe)->buffer_status_val & BD_QTD_SIZE_MASK;
@@ -1200,7 +972,7 @@ index b7100e4..cd60de9 100644
  // ----------------- Interrupt Handlers --------------------
  
  /**
-@@ -914,7 +1692,15 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+@@ -914,7 +1658,15 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
          break;
      }
      case USB_DWC_HAL_PORT_EVENT_ENABLED: {
@@ -1217,7 +989,7 @@ index b7100e4..cd60de9 100644
          port->speed = get_usb_port_speed(usb_dwc_hal_port_get_conn_speed(port->hal));
          port->state = HCD_PORT_STATE_ENABLED;
          port->flags.conn_dev_ena = 1;
-@@ -976,9 +1762,8 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+@@ -976,9 +1728,8 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
   * @param[out] yield Set to true if a yield is required as a result of handling the interrupt
   * @return hcd_pipe_event_t The pipe event
   */
@@ -1228,7 +1000,7 @@ index b7100e4..cd60de9 100644
      hcd_pipe_event_t event = HCD_PIPE_EVENT_NONE;
  
      switch (chan_event) {
-@@ -990,10 +1775,17 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -990,10 +1741,17 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          pipe->last_event = HCD_PIPE_EVENT_URB_DONE;
          event = pipe->last_event;
          // Mark the buffer as done
@@ -1248,7 +1020,7 @@ index b7100e4..cd60de9 100644
              // If the next buffer is filled and ready to execute, execute it
              _buffer_exec(pipe);
          }
-@@ -1004,6 +1796,10 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1004,6 +1762,10 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
              // Now that we've parsed a buffer, see if another URB can be filled in its place
              _buffer_fill(pipe);
          }
@@ -1259,7 +1031,7 @@ index b7100e4..cd60de9 100644
          break;
      }
      case USB_DWC_HAL_CHAN_EVENT_ERROR: {
-@@ -1013,7 +1809,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1013,7 +1775,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          event = pipe->last_event;
          pipe->state = HCD_PIPE_STATE_HALTED;
          // Mark the buffer as done with an error
@@ -1268,7 +1040,7 @@ index b7100e4..cd60de9 100644
          _buffer_done(pipe, stop_idx, pipe->last_event, false);
          // Parse the buffer
          _buffer_parse(pipe);
-@@ -1026,7 +1822,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1026,7 +1788,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          event = pipe->last_event;
          // Halt request event is triggered when packet is successful completed. But just treat all halted transfers as errors
          pipe->state = HCD_PIPE_STATE_HALTED;
@@ -1277,7 +1049,7 @@ index b7100e4..cd60de9 100644
          _buffer_done(pipe, stop_idx, HCD_PIPE_EVENT_NONE, true);
          // Parse the buffer
          _buffer_parse(pipe);
-@@ -1044,6 +1840,102 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1044,6 +1806,105 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
      return event;
  }
  
@@ -1322,9 +1094,7 @@ index b7100e4..cd60de9 100644
 +            continue;
 +        }
 +        usb_dwc_hal_chan_event_t chan_event = USB_DWC_HAL_CHAN_EVENT_NONE;
-+        if (pipe->bdma.halt_req && !(pipe->tt_hub_addr != 0 && pipe->bdma.csplit
-+                                     && pipe->ep_char.type != USB_DWC_XFER_TYPE_ISOCHRONOUS)) {
-+            // (A bulk or control complete split waiting for its microframe collects its result first)
++        if (pipe->bdma.halt_req) {
 +            chan_event = bd_halt_point(pipe);
 +        } else if (!port->flags.conn_dev_ena) {
 +            continue;
@@ -1354,9 +1124,14 @@ index b7100e4..cd60de9 100644
 +                }
 +                break;
 +            default:
-+                // Retries of control and bulk transactions: one per (micro)frame, or per frame for a start split.
-+                // A complete split answered NYET asks again in the next microframe.
-+                if (frame_start || pipe->tt_hub_addr == 0 || pipe->bdma.csplit) {
++                // Retries of control and bulk transactions: one per (micro)frame. A split one waits for the next
++                // frame, unless data moved a few retries ago: a device that NAKs between packets, as one whose
++                // firmware arms its endpoint a packet at a time does, is then asked again a microframe later
++                // rather than a millisecond, and an idle endpoint still costs a retry per frame.
++                if (frame_start || pipe->tt_hub_addr == 0) {
++                    bd_arm(pipe, false);
++                } else if (pipe->bdma.quick_naks) {
++                    pipe->bdma.quick_naks--;
 +                    bd_arm(pipe, false);
 +                }
 +                break;
@@ -1380,7 +1155,7 @@ index b7100e4..cd60de9 100644
  /**
   * @brief Main interrupt handler
   *
-@@ -1061,6 +1953,13 @@ static void intr_hdlr_main(void *arg)
+@@ -1061,6 +1922,13 @@ static void intr_hdlr_main(void *arg)
      bool yield = false;
  
      HCD_ENTER_CRITICAL_ISR();
@@ -1394,7 +1169,7 @@ index b7100e4..cd60de9 100644
      usb_dwc_hal_port_event_t hal_port_evt = usb_dwc_hal_decode_intr(port->hal);
      if (hal_port_evt == USB_DWC_HAL_PORT_EVENT_CHAN) {
          // Channel event. Cycle through each pending channel
-@@ -1089,6 +1988,20 @@ static void intr_hdlr_main(void *arg)
+@@ -1089,6 +1957,11 @@ static void intr_hdlr_main(void *arg)
              }
          }
      }
@@ -1402,20 +1177,11 @@ index b7100e4..cd60de9 100644
 +    if (sof) {
 +        bd_sof(port, &yield);
 +    }
-+    if (port->tt_clears_notify) {
-+        // Tell the hub driver it has Clear_TT_Buffer requests to send. No port event is pending, so it finds none.
-+        port->tt_clears_notify = false;
-+        if (port->callback != NULL) {
-+            HCD_EXIT_CRITICAL_ISR();
-+            yield |= port->callback((hcd_port_handle_t)port, HCD_PORT_EVENT_NONE, port->callback_arg, true);
-+            HCD_ENTER_CRITICAL_ISR();
-+        }
-+    }
 +#endif
      HCD_EXIT_CRITICAL_ISR();
  
      if (yield) {
-@@ -1214,11 +2127,41 @@ static bool _port_debounce(port_t *port)
+@@ -1214,11 +2087,41 @@ static bool _port_debounce(port_t *port)
      return is_connected;
  }
  
@@ -1458,7 +1224,7 @@ index b7100e4..cd60de9 100644
      }
      CACHE_SYNC_FRAME_LIST(port->frame_list);
  }
-@@ -1390,7 +2333,12 @@ static esp_err_t _port_cmd_reset(port_t *port)
+@@ -1390,7 +2293,12 @@ static esp_err_t _port_cmd_reset(port_t *port)
      usb_dwc_hal_set_fifo_config(port->hal, &port->fifo_config);// Apply FIFO settings
  
      usb_dwc_hal_port_set_frame_list(port->hal, port->frame_list, FRAME_LIST_LEN);   // Set periodic frame list
@@ -1472,7 +1238,7 @@ index b7100e4..cd60de9 100644
  
      ret = ESP_OK;
  bailout:
-@@ -1602,6 +2550,13 @@ esp_err_t hcd_port_init(int port_number, const hcd_port_config_t *port_config, h
+@@ -1602,6 +2510,11 @@ esp_err_t hcd_port_init(int port_number, const hcd_port_config_t *port_config, h
      usb_dwc_hal_init(port_obj->hal, port_number);
  #endif
      hal_inited = true;
@@ -1480,40 +1246,11 @@ index b7100e4..cd60de9 100644
 +    // Split transactions need Buffer DMA mode, which only a high-speed host port needs
 +    port_obj->bdma = port_obj->hal->constant_config.hsphy_type != 0 && !port_config->fsls_only;
 +    port_obj->bdma_wait_mask = 0;
-+    port_obj->tt_clears_num = 0;
-+    port_obj->tt_clears_notify = false;
 +#endif
      port_obj->hal->channels.hdls = calloc(port_obj->hal->constant_config.chan_num_total, sizeof(usb_dwc_hal_chan_t *));
      if (port_obj->hal->channels.hdls == NULL) {
          err_ret = ESP_ERR_NO_MEM;
-@@ -1736,6 +2691,26 @@ esp_err_t hcd_port_get_speed(hcd_port_handle_t port_hdl, usb_speed_t *speed)
-     return ESP_OK;
- }
- 
-+bool hcd_port_get_tt_clear(hcd_port_handle_t port_hdl, hcd_tt_clear_t *tt_clear)
-+{
-+    bool ret = false;
-+#if HCD_BUFFER_DMA
-+    port_t *port = (port_t *)port_hdl;
-+    HCD_ENTER_CRITICAL();
-+    if (port->tt_clears_num > 0) {
-+        *tt_clear = port->tt_clears[0];
-+        port->tt_clears_num--;
-+        memmove(&port->tt_clears[0], &port->tt_clears[1], port->tt_clears_num * sizeof(hcd_tt_clear_t));
-+        ret = true;
-+    }
-+    HCD_EXIT_CRITICAL();
-+#else
-+    (void)port_hdl;
-+    (void)tt_clear;
-+#endif
-+    return ret;
-+}
-+
- hcd_port_event_t hcd_port_handle_event(hcd_port_handle_t port_hdl)
- {
-     port_t *port = (port_t *)port_hdl;
-@@ -2018,15 +2993,16 @@ static esp_err_t _pipe_cmd_halt(pipe_t *pipe)
+@@ -2018,15 +2931,16 @@ static esp_err_t _pipe_cmd_halt(pipe_t *pipe)
      }
      // If the pipe's port is invalid, we just mark the pipe as halted without needing to halt the underlying channel
      if (pipe->port->flags.conn_dev_ena // Skip halting the underlying channel if the port is invalid
@@ -1532,7 +1269,7 @@ index b7100e4..cd60de9 100644
          pipe->state = HCD_PIPE_STATE_HALTED;
      }
      ret = ESP_OK;
-@@ -2110,6 +3086,63 @@ exit:
+@@ -2110,6 +3024,63 @@ exit:
  
  // ----------------------- Public --------------------------
  
@@ -1596,7 +1333,7 @@ index b7100e4..cd60de9 100644
  esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pipe_config, hcd_pipe_handle_t *pipe_hdl)
  {
      HCD_CHECK(port_hdl != NULL && pipe_config != NULL && pipe_hdl != NULL, ESP_ERR_INVALID_ARG);
-@@ -2170,6 +3203,32 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2170,6 +3141,32 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
      pipe_set_ep_char(pipe_config, type, is_default, pipe_idx, port_speed, &ep_char);
      memcpy(&pipe->ep_char, &ep_char, sizeof(usb_dwc_hal_ep_char_t));
      pipe->state = HCD_PIPE_STATE_ACTIVE;
@@ -1629,15 +1366,15 @@ index b7100e4..cd60de9 100644
      pipe->callback = pipe_config->callback;
      pipe->callback_arg = pipe_config->callback_arg;
      pipe->context = pipe_config->context;
-@@ -2181,6 +3240,62 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2181,6 +3178,62 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
          ret = ESP_ERR_INVALID_STATE;
          goto err;
      }
 +    if (tt_periodic) {
 +        // A translator runs every periodic transaction of the devices behind it in each full-speed frame, so what
 +        // they take together has to fit in one. (The budget counts each endpoint in every frame, whatever its
-+        // interval.) Its isochronous OUT start splits all go in a frame's first microframes, and it takes at most
-+        // 188 bytes of them a microframe, so it serves one isochronous OUT endpoint.
++        // interval.) Each isochronous pipe also gets microframes of its own for what the translator runs for it,
++        // 188 bytes to a microframe, and the translator serves one isochronous OUT endpoint.
 +        uint32_t used = 0;
 +        uint32_t uframes[8] = {0};
 +        bool iso_out = false;
@@ -1692,7 +1429,7 @@ index b7100e4..cd60de9 100644
      bool chan_allocated = usb_dwc_hal_chan_alloc(port->hal, pipe->chan_obj, (void *) pipe);
      if (!chan_allocated) {
          HCD_EXIT_CRITICAL();
-@@ -2189,7 +3304,7 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2189,7 +3242,7 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
          ret = ESP_ERR_NOT_SUPPORTED;
          goto err;
      }
@@ -1701,7 +1438,7 @@ index b7100e4..cd60de9 100644
      CACHE_SYNC_FRAME_LIST(port->frame_list);
      // Add the pipe to the list of idle pipes in the port object
      TAILQ_INSERT_TAIL(&port->pipes_idle_tailq, pipe, tailq_entry);
-@@ -2204,7 +3319,12 @@ err:
+@@ -2204,7 +3257,12 @@ err:
          buffer_block_free(buffers[i]);
      }
      free(chan_obj);
@@ -1715,7 +1452,7 @@ index b7100e4..cd60de9 100644
      return ret;
  }
  
-@@ -2247,6 +3367,11 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
+@@ -2247,6 +3305,11 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
      // Remove pipe from the list of idle pipes (it must be in the idle list because it should have no queued URBs)
      TAILQ_REMOVE(&pipe->port->pipes_idle_tailq, pipe, tailq_entry);
      pipe->port->num_pipes_idle--;
@@ -1727,7 +1464,7 @@ index b7100e4..cd60de9 100644
      usb_dwc_hal_chan_free(pipe->port->hal, pipe->chan_obj);
      HCD_EXIT_CRITICAL();
  
-@@ -2255,6 +3380,9 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
+@@ -2255,6 +3318,9 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
          buffer_block_free(pipe->buffers[i]);
      }
      free(pipe->chan_obj);
@@ -1737,7 +1474,7 @@ index b7100e4..cd60de9 100644
      free(pipe);
      return ESP_OK;
  }
-@@ -2269,7 +3397,7 @@ esp_err_t hcd_pipe_update_mps(hcd_pipe_handle_t pipe_hdl, int mps)
+@@ -2269,7 +3335,7 @@ esp_err_t hcd_pipe_update_mps(hcd_pipe_handle_t pipe_hdl, int mps)
                          ESP_ERR_INVALID_STATE);
      pipe->ep_char.mps = mps;
      // Update the underlying channel's registers
@@ -1746,7 +1483,7 @@ index b7100e4..cd60de9 100644
      HCD_EXIT_CRITICAL();
      return ESP_OK;
  }
-@@ -2284,7 +3412,7 @@ esp_err_t hcd_pipe_update_dev_addr(hcd_pipe_handle_t pipe_hdl, uint8_t dev_addr)
+@@ -2284,7 +3350,7 @@ esp_err_t hcd_pipe_update_dev_addr(hcd_pipe_handle_t pipe_hdl, uint8_t dev_addr)
                          ESP_ERR_INVALID_STATE);
      pipe->ep_char.dev_addr = dev_addr;
      // Update the underlying channel's registers
@@ -1755,7 +1492,7 @@ index b7100e4..cd60de9 100644
      HCD_EXIT_CRITICAL();
      return ESP_OK;
  }
-@@ -2596,7 +3724,7 @@ static void IRAM_ATTR _buffer_exec(pipe_t *pipe)
+@@ -2596,7 +3662,7 @@ static void IRAM_ATTR _buffer_exec(pipe_t *pipe)
      // Update buffer and multi buffer flags
      buffer_to_exec->status_flags.executing = 1;
      pipe->multi_buffer_control.buffer_is_executing = 1;
@@ -1764,7 +1501,7 @@ index b7100e4..cd60de9 100644
  }
  
  static void _buffer_exec_cont(pipe_t *pipe)
-@@ -2627,7 +3755,7 @@ static void _buffer_exec_cont(pipe_t *pipe)
+@@ -2627,7 +3693,7 @@ static void _buffer_exec_cont(pipe_t *pipe)
      // Continue the control transfer
      usb_dwc_hal_chan_set_dir(pipe->chan_obj, next_dir_is_in);
      usb_dwc_hal_chan_set_pid(pipe->chan_obj, next_pid);
@@ -1774,7 +1511,7 @@ index b7100e4..cd60de9 100644
  
  static inline void _buffer_parse_ctrl(dma_buffer_block_t *buffer)
 diff --git a/src/hub.c b/src/hub.c
-index 6131770..67226d8 100644
+index 6131770..9e4ac6d 100644
 --- a/src/hub.c
 +++ b/src/hub.c
 @@ -196,12 +196,18 @@ static esp_err_t dev_tree_node_new(ext_hub_handle_t parent, uint8_t port_num, us
@@ -1821,23 +1558,6 @@ index 6131770..67226d8 100644
  
          if (dev_tree_node_new(ext_hub_hdl, port_num, port_speed) != ESP_OK) {
              ESP_LOGE(HUB_DRIVER_TAG, "Failed to add new downstream device");
-@@ -442,6 +452,16 @@ new_ds_dev_err:
- static void root_port_handle_events(root_hub_port_t *root_hub_port)
- {
-     hcd_port_handle_t root_port_hdl = root_hub_port->constant.hdl;
-+#ifdef ENABLE_USB_HUBS
-+    // Clear_TT_Buffer requests the port owes translators, after failed bulk or control split transactions
-+    hcd_tt_clear_t tt_clear;
-+    while (hcd_port_get_tt_clear(root_port_hdl, &tt_clear)) {
-+        esp_err_t ret = ext_hub_clear_tt_buffer(tt_clear.hub_addr, tt_clear.value);
-+        if (ret != ESP_OK) {
-+            ESP_LOGD(HUB_DRIVER_TAG, "Clear_TT_Buffer for hub %d not sent: %s", tt_clear.hub_addr, esp_err_to_name(ret));
-+        }
-+    }
-+#endif // ENABLE_USB_HUBS
-     hcd_port_event_t port_event = hcd_port_handle_event(root_port_hdl);
-     switch (port_event) {
-     case HCD_PORT_EVENT_NONE:
 diff --git a/src/usbh.c b/src/usbh.c
 index f9358bf..6f56c3d 100644
 --- a/src/usbh.c
