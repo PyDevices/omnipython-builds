@@ -33,6 +33,10 @@ class Ring:
     One producer and one consumer: the host's stream on one side, the
     program on the other. On a firmware with `machine.USBDevice` this is
     `machine.USBDevice.Ring` itself.
+
+    On ESP32 chips the bytes are outside the Python heap, in PSRAM where
+    there is some, so a camera's ring of a few megabytes doesn't slow
+    every garbage collection. They go back when the ring is collected.
     """
 
     def __init__(self, nbytes: int) -> None:

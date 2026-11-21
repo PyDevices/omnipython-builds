@@ -12,6 +12,7 @@
 #include "py/runtime.h"
 #include "py/obj.h"
 #include "py/objstr.h"
+#include "py/gc.h"
 #include "py/mperrno.h"
 #include <stdio.h>
 #include <string.h>
@@ -474,6 +475,13 @@ static void usbhost_stream_release_owners(void) {
 static uint32_t usbhost_ring_put(void *r, const uint8_t *src, uint32_t n) {
     return mp_usbd_ring_put(r, src, n) ? n : 0;
 }
+
+// On ESP-IDF a USBDevice.Ring's bytes are outside the heap and freed by its
+// finaliser, which a soft reset can run before the host's own teardown: stop
+// any stream on it first.
+static void usbhost_ring_free_hook(void *ring) {
+    usbhost_stream_close_ring(ring);
+}
 #define USBHOST_RING_TYPE (mp_usbd_ring_type)
 #else
 // _usbhost.Ring, for a firmware without machine.USBDevice (the ESP32-S31's,
@@ -481,9 +489,17 @@ static uint32_t usbhost_ring_put(void *r, const uint8_t *src, uint32_t n) {
 // write, stats) and the same C surface a stream uses. With USBDevice in the
 // firmware, _usbhost.Ring is USBDevice.Ring itself. One producer and one
 // consumer: the host's stream task puts, the interpreter reads.
+//
+// The bytes are outside the Python heap, in PSRAM where there is some. The
+// collector reads every word of every block it can reach, in case one is a
+// pointer, so a camera's two-frame ring there (4 MB at 1280x720) made each
+// collection take about 300 ms, and needed 4 MB in one piece of the heap. Only
+// the stream's copies reach the ring, never the controller's DMA. The bytes go
+// back when the Ring is collected or at a soft reset (its finaliser), after
+// any stream still writing to it is stopped.
 typedef struct {
     mp_obj_base_t base;
-    uint8_t *buf;
+    uint8_t *buf;               // outside the heap; NULL once freed
     uint32_t mask;              // size - 1; size is a power of two
     volatile uint32_t head;     // free-running: the producer's count
     volatile uint32_t tail;     // free-running: the consumer's count
@@ -561,6 +577,10 @@ static void usbhost_ring_overflow(void *ring) {
     ((usbhost_ring_obj_t *)ring)->overflows++;
 }
 
+static uint8_t *usbhost_ring_bytes(uint32_t size) {
+    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+}
+
 // Ring(nbytes): rounded up to a power of two.
 static mp_obj_t usbhost_ring_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
     mp_arg_check_num(n_args, n_kw, 1, 1, false);
@@ -572,12 +592,35 @@ static mp_obj_t usbhost_ring_make_new(const mp_obj_type_t *type, size_t n_args, 
     while (size < (uint32_t)want) {
         size <<= 1;
     }
-    usbhost_ring_obj_t *self = mp_obj_malloc(usbhost_ring_obj_t, type);
-    self->buf = m_new(uint8_t, size);
+    usbhost_ring_obj_t *self = mp_obj_malloc_with_finaliser(usbhost_ring_obj_t, type);
+    self->buf = NULL;
     self->mask = size - 1;
     self->head = self->tail = self->overflows = self->underflows = 0;
+    self->buf = usbhost_ring_bytes(size);
+    if (self->buf == NULL) {
+        // Rings nobody holds keep their bytes until their finalisers run.
+        gc_collect();
+        self->buf = usbhost_ring_bytes(size);
+    }
+    if (self->buf == NULL) {
+        mp_raise_msg_varg(&mp_type_MemoryError,
+            MP_ERROR_TEXT("can't allocate a %u-byte ring outside the heap"), (uint)size);
+    }
     return MP_OBJ_FROM_PTR(self);
 }
+
+static mp_obj_t usbhost_ring_del(mp_obj_t self_in) {
+    usbhost_ring_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (self->buf != NULL) {
+        usbhost_stream_close_ring(self);
+        heap_caps_free(self->buf);
+        self->buf = NULL;
+        self->mask = 0;
+        self->head = self->tail = 0;
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(usbhost_ring_del_obj, usbhost_ring_del);
 
 // ring.any(): bytes waiting.
 static mp_obj_t usbhost_ring_any(mp_obj_t self_in) {
@@ -628,6 +671,7 @@ static const mp_rom_map_elem_t usbhost_ring_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_readinto), MP_ROM_PTR(&usbhost_ring_readinto_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&usbhost_ring_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_stats), MP_ROM_PTR(&usbhost_ring_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&usbhost_ring_del_obj) },
 };
 static MP_DEFINE_CONST_DICT(usbhost_ring_locals_dict, usbhost_ring_locals_dict_table);
 
@@ -694,6 +738,7 @@ static mp_obj_t usbhost_host_stream_py(size_t n_args, const mp_obj_t *pos_args, 
             .stage = mp_usbd_ring_stage, .commit = mp_usbd_ring_commit,
             .overflow = mp_usbd_ring_overflow,
         };
+        mp_usbd_ring_free_hook = usbhost_ring_free_hook;
         known = true;
     }
     #else
