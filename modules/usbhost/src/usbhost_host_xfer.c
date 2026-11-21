@@ -194,6 +194,34 @@ static void usbhost_xfer_audio_fs_interval(usb_device_handle_t dev, uint8_t itf,
     usbhost_audio_fs_interval_fix((uint8_t *)cfg, cfg->wTotalLength, itf, alt);
 }
 
+// Whether every periodic endpoint of an interface's alternate setting fits
+// the controller's FIFO: IN up to in_b bytes a packet, periodic OUT up to
+// ptx_b. Packets of a high-bandwidth endpoint count together.
+static bool usbhost_xfer_alt_fits_fifo(usb_device_handle_t dev, uint8_t itf, uint8_t alt, uint32_t in_b, uint32_t ptx_b) {
+    const usb_config_desc_t *cfg;
+    if (usb_host_get_active_config_descriptor(dev, &cfg) != ESP_OK) {
+        return false;
+    }
+    const uint8_t *p = (const uint8_t *)cfg;
+    const uint8_t *end = p + cfg->wTotalLength;
+    bool ours = false;
+    p += cfg->bLength;
+    while (p + 2 <= end && p[0] >= 2 && p + p[0] <= end) {
+        if (p[1] == USB_B_DESCRIPTOR_TYPE_INTERFACE && p[0] >= 9) {
+            ours = p[2] == itf && p[3] == alt;
+        } else if (ours && p[1] == USB_B_DESCRIPTOR_TYPE_ENDPOINT && p[0] >= 7 && (p[3] & 1)) {
+            // Isochronous (1) or interrupt (3): bit 0 of bmAttributes
+            const uint16_t w = (uint16_t)(p[4] | (p[5] << 8));
+            const uint32_t bytes = (uint32_t)(w & 0x7FF) * (1 + ((w >> 11) & 3));
+            if (bytes > ((p[2] & 0x80) ? in_b : ptx_b)) {
+                return false;
+            }
+        }
+        p += p[0];
+    }
+    return true;
+}
+
 // 1 for a fresh claim (the host's pipes start at DATA0), 0 when the
 // interface was already claimed at that alternate, or a negative errno.
 int usbhost_xfer_claim(uint32_t dev_id, uint8_t itf, uint8_t alt) {
@@ -233,6 +261,16 @@ int usbhost_xfer_claim(uint32_t dev_id, uint8_t itf, uint8_t alt) {
         // rather than a busy that sends the reader looking for another claim.
         uint32_t in_b, ptx_b;
         usbhost_host_fifo_limits(&in_b, &ptx_b);
+        if (in_b && usbhost_xfer_alt_fits_fifo(dev, itf, alt, in_b, ptx_b)) {
+            // Its packets fit, so what refused it is the bus time left on the
+            // transaction translator of the high-speed hub in front of this
+            // full- or low-speed device, which it shares with the other
+            // devices behind that hub.
+            printf("usbhost_xfer: interface %d alternate %d needs more of each full-speed frame than the hub's "
+                "transaction translator has left; stop another stream on that hub first\n", itf, alt);
+            r = -MP_ENOSPC;
+            goto out;
+        }
         if (in_b) {
             printf("usbhost_xfer: interface %d alternate %d has an endpoint bigger than this host's FIFO "
                 "takes (IN up to %u B, periodic OUT up to %u B)\n", itf, alt, (unsigned)in_b, (unsigned)ptx_b);

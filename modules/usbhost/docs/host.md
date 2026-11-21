@@ -180,8 +180,22 @@ doesn't apply to the S31.
 
 The S31's firmware has no `machine.USBDevice`, so `usb.host.audio` and
 `usb.host.video` take their stream ring from `_usbhost.Ring`, which is
-`USBDevice.Ring` itself on a firmware that has one. A USB sound card hasn't
-been run on the S31.
+`USBDevice.Ring` itself on a firmware that has one.
+
+A full-speed USB headset works behind the high-speed hub too. An ESP32-P4
+board posing as a USB Audio 2.0 headset (48 kHz, 16-bit stereo, 196-byte
+packets each way) sat on the same hub as the C920e. For 60 seconds the S31
+played a 1 kHz tone to it and recorded the 750 Hz tone it sent back, while
+the camera streamed 1280x720 MJPEG. Each side heard its tone at the right pitch and level, with
+no packet missing, repeated or out of place, and all 901 camera frames
+arrived whole.
+
+A full- or low-speed device's isochronous and interrupt endpoints share the
+translator's full-speed bus time with the other such devices behind the same
+hub, and one isochronous OUT endpoint is all a translator takes. A stream
+that doesn't fit is refused when it starts, with ENOSPC (errno 28) in the
+`OSError`, and the console says the translator has no room left. Stop
+another stream on that hub, or plug the device into a different hub.
 
 ## Host and device at once on the ESP32-P4
 
