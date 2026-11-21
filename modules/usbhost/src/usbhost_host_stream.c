@@ -333,6 +333,22 @@ void usbhost_stream_close_all(void) {
     usbhost_host_unlock();
 }
 
+void usbhost_stream_close_ring(const void *ctx) {
+    if (usbhost_streams == NULL) {
+        return;
+    }
+    usbhost_host_lock();
+    for (int i = 0; i < USBHOST_HOST_STREAMS; i++) {
+        usbhost_stream_t *s = &usbhost_streams[i];
+        // A stream already stopped (open false) touches its ring no more,
+        // even with transfers still out: the callback looks first.
+        if (s->used && s->open && s->cfg.ring.ctx == ctx) {
+            usbhost_stream_stop_locked(s);
+        }
+    }
+    usbhost_host_unlock();
+}
+
 uint32_t usbhost_stream_free_slots(void) {
     if (usbhost_streams == NULL) {
         return (1u << USBHOST_HOST_STREAMS) - 1;
