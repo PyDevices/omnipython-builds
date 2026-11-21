@@ -14,9 +14,12 @@
 // The completion is delivered by the host task, inside its locked pump, so
 // the caller lets the host lock go while it waits.
 //
-// A transfer that times out is still queued in IDF's host library. A bulk or
-// interrupt one is retired by halting, flushing and clearing its endpoint,
-// and the wait goes on until its callback says so. A control transfer can't
+// A transfer that times out is still queued in IDF's host library. An IN one
+// is left armed, and the next read of its endpoint collects it: retiring it
+// would lose a packet the device hands over as the halt lands, since IDF's
+// controller driver reports a halted transfer as empty. An OUT one is retired
+// by halting, flushing and clearing its endpoint, and the wait goes on until
+// its callback says so. A control transfer can't
 // be cancelled (IDF ignores timeout_ms on EP0), so it is handed to
 // usbhost_host_ctrl_abandon(), which frees it whenever it does complete.
 
@@ -69,13 +72,17 @@ typedef struct {
     usb_transfer_t *xfer;
     SemaphoreHandle_t done;
     volatile bool busy;
-    // A poll that timed out (raise_on_timeout=False) leaves its IN transfer
-    // armed rather than retiring it: the next read of this endpoint collects
-    // it, so polling an interrupt endpoint costs neither a halt and flush
-    // each time nor a report that lands between polls. It stays set after
-    // the transfer completes (busy false) until a read takes the data: the
-    // host task can deliver the completion while no read is waiting.
+    // An IN read that timed out leaves its transfer armed rather than
+    // retiring it: the next read of this endpoint collects it, so nothing the
+    // device sends is lost to a cancel, and polling an interrupt endpoint
+    // costs no halt and flush each time. It stays set after the transfer
+    // completes (busy false) until a read takes the data: the host task can
+    // deliver the completion while no read is waiting.
     bool kept;
+    // Bytes a finished IN transfer brought beyond what its read asked for,
+    // at rest_off in the transfer's buffer: the next read gets them first.
+    uint32_t rest_off;
+    uint32_t rest_len;
 } usbhost_xfer_pipe_t;
 
 static usbhost_xfer_claim_t usbhost_xfer_claims[USBHOST_XFER_MAX_CLAIMS];
@@ -392,8 +399,8 @@ static usbhost_xfer_pipe_t *usbhost_xfer_pipe(usb_device_handle_t dev, uint8_t e
         *err = -MP_EBUSY;      // the last one timed out and hasn't retired yet
         return NULL;
     }
-    if (pipe != NULL && pipe->kept) {
-        return pipe;           // a kept poll, armed or finished: the caller collects it
+    if (pipe != NULL && (pipe->kept || pipe->rest_len)) {
+        return pipe;           // a kept read, armed or finished, or its rest: the caller collects it
     }
     int itf;
     uint16_t mps = usbhost_xfer_ep_mps(dev, ep, &itf);
@@ -449,9 +456,10 @@ static void usbhost_xfer_retire(usbhost_xfer_pipe_t *pipe) {
     usb_host_endpoint_clear(pipe->dev, pipe->ep);
 }
 
-// `keep`: an IN transfer that times out stays armed and this returns 0, for
-// a poll that treats "nothing yet" as normal (usb.core's read with
-// raise_on_timeout=False). A later call on the endpoint picks it up.
+// An IN transfer that times out stays armed, and a later call on the
+// endpoint picks it up. It returns -ETIMEDOUT, or with `keep` 0, for a poll
+// that treats "nothing yet" as normal (usb.core's read with
+// raise_on_timeout=False); a zero-length packet is then 0 too.
 // `now`, with keep: don't wait at all. Arm the transfer if it isn't, take it
 // if it has finished, and otherwise return 0 at once.
 static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t len, uint32_t timeout_ms, bool keep,
@@ -469,6 +477,13 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
     }
     usb_transfer_t *x = pipe->xfer;
     bool in = (ep & 0x80) != 0;
+    if (in && pipe->rest_len) {
+        r = pipe->rest_len < len ? (int)pipe->rest_len : (int)len;
+        memcpy(data, x->data_buffer + pipe->rest_off, (size_t)r);
+        pipe->rest_off += (uint32_t)r;
+        pipe->rest_len -= (uint32_t)r;
+        goto out;
+    }
     // A kept transfer is collected, never submitted again over the top of
     // data it may already hold.
     if (!pipe->kept) {
@@ -483,10 +498,10 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
         }
         x->callback = usbhost_xfer_cb;
         x->context = pipe;
-        // A kept poll waits for data however long it takes: the library's
-        // own timeout would complete it as TIMED_OUT, and the next poll
-        // would find an error rather than a transfer still armed.
-        x->timeout_ms = (keep && in) ? 0 : timeout_ms;
+        // An IN transfer waits for data however long it takes: the
+        // library's own timeout would complete it as TIMED_OUT, and the next
+        // read would find an error rather than a transfer still armed.
+        x->timeout_ms = in ? 0 : timeout_ms;
         xSemaphoreTake(pipe->done, 0);
         pipe->busy = true;
         if (usb_host_transfer_submit(x) != ESP_OK) {
@@ -497,19 +512,18 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
     }
     pipe->kept = false;
     if (!(now ? usbhost_xfer_done_now(pipe->done) : usbhost_xfer_wait(pipe->done, timeout_ms))) {
-        if (keep && in) {
+        #ifndef USBHOST_XFER_PLANT_RETIRE_IN
+        if (in) {
+        #else
+        if (in && keep) {   // the old way, for the host tests: a raising read retires its transfer
+        #endif
             pipe->kept = true;
-            r = 0;
+            r = keep ? 0 : -MP_ETIMEDOUT;
             goto out;
         }
         usbhost_xfer_retire(pipe);
-        // Data can land between the timeout and the halt: a MIDI note
-        // arriving as a poll gives up. Hand it over rather than drop it.
-        if (pipe->busy || x->actual_num_bytes <= 0 || !in) {
-            r = -MP_ETIMEDOUT;
-            goto out;
-        }
-        x->status = USB_TRANSFER_STATUS_COMPLETED;
+        r = -MP_ETIMEDOUT;
+        goto out;
     }
     r = usbhost_xfer_status_errno(x->status);
     if (r == -MP_ETIMEDOUT && keep && in) {
@@ -519,10 +533,13 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
     if (r == 0) {
         r = x->actual_num_bytes;
         if (in) {
-            // A device may send more than was asked for when len isn't a
-            // whole packet; the rest is dropped, as libusb reports overflow.
+            // A transfer can bring more than this read asks for: len isn't
+            // a whole packet, or a read that timed out armed it for a bigger
+            // buffer. The rest waits in the pipe for the next read.
             memcpy(data, x->data_buffer, (size_t)r < len ? (size_t)r : len);
             if ((size_t)r > len) {
+                pipe->rest_off = (uint32_t)len;
+                pipe->rest_len = (uint32_t)((size_t)r - len);
                 r = (int)len;
             }
         }
