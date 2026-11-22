@@ -1,6 +1,7 @@
 # ttfio from a bare clone on the unix port: the API test, then FreeType's
 # unhinted drawing of the same icons beside ttfio's, then the icons package
-# frozen on top of it, from omnipython-lib at its pinned commit.
+# frozen on top of it, from omnipython-lib at its pinned commit. The second job
+# runs the same ttfio and icons checks on CircuitPython's unix port.
 name: ttfio
 
 on:
@@ -62,3 +63,23 @@ jobs:
 
       - name: icons draws every icon, frozen
         run: timeout 300 ./builds/unix/standard/micropython modules/.omnipython-lib/packages/icons/tests/run.py
+
+  circuitpython:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the unix port's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libffi-dev pkg-config
+
+      - name: Build CircuitPython's unix port with ttfio and icons
+        run: python3 build_mp.py --interpreter circuitpython --port unix --modules ttfio,icons
+
+      - name: The API, its errors, and drawing without allocating
+        run: timeout 120 ./builds/circuitpython/unix/coverage/micropython modules/ttfio/tests/test_ttfio.py
+
+      - name: icons draws every icon, frozen
+        run: timeout 300 ./builds/circuitpython/unix/coverage/micropython modules/.omnipython-lib/packages/icons/tests/run.py
