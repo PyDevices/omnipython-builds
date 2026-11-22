@@ -455,32 +455,37 @@ static usbhost_xfer_pipe_t *usbhost_xfer_pipe(usb_device_handle_t dev, uint8_t e
     if (size == 0) {
         size = mps;
     }
-    if (pipe != NULL && (pipe->mps != mps || (size_t)pipe->xfer->data_buffer_size < size)) {
-        usb_host_transfer_free(pipe->xfer);
-        pipe->xfer = NULL;
+    if (pipe != NULL && pipe->mps == mps && (size_t)pipe->xfer->data_buffer_size >= size) {
+        return pipe;
+    }
+    if (pipe == NULL && free_slot == NULL) {
+        *err = -MP_ENOMEM;
+        return NULL;
+    }
+    // The new transfer first: if there's no memory for it, the pipe keeps the
+    // one it has, and a later, smaller read still works.
+    usb_transfer_t *xfer;
+    if (usbhost_host_pipe_transfer_alloc(size, &xfer) != ESP_OK) {
+        *err = -MP_ENOMEM;
+        return NULL;
     }
     if (pipe == NULL) {
-        if (free_slot == NULL) {
+        SemaphoreHandle_t done = xSemaphoreCreateBinary();
+        if (done == NULL) {
+            usb_host_transfer_free(xfer);
             *err = -MP_ENOMEM;
             return NULL;
         }
         pipe = free_slot;
         memset(pipe, 0, sizeof(*pipe));
-        pipe->done = xSemaphoreCreateBinary();
-        if (pipe->done == NULL) {
-            *err = -MP_ENOMEM;
-            return NULL;
-        }
+        pipe->done = done;
         pipe->in_use = true;
         pipe->dev = dev;
         pipe->ep = ep;
+    } else {
+        usb_host_transfer_free(pipe->xfer);
     }
-    if (pipe->xfer == NULL) {
-        if (usbhost_host_in_transfer_alloc(size, 0, &pipe->xfer) != ESP_OK) {
-            *err = -MP_ENOMEM;
-            return NULL;
-        }
-    }
+    pipe->xfer = xfer;
     pipe->mps = mps;
     return pipe;
 }
@@ -581,7 +586,10 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
                 r = (int)len;
             }
         }
-    } else if (r == -MP_EPIPE) {
+    } else if (r == -MP_EPIPE || r == -MP_EIO) {
+        // A stall or a transaction error halts the endpoint in IDF's host
+        // library, and every later transfer on it would be refused until
+        // it's cleared.
         usb_host_endpoint_clear(dev, ep);
     }
 out:
@@ -645,6 +653,37 @@ static void usbhost_xfer_drop_pipes(usb_device_handle_t dev, int itf, bool devic
 
 // -- control
 
+// CLEAR_FEATURE(ENDPOINT_HALT) puts the device's data toggle for the
+// endpoint back to DATA0, so the host's goes back too, as libusb's
+// clear_halt does. Without it, a mass storage reset recovery after a failed
+// command left host and device a packet out of step on every later
+// command. Whatever the endpoint held is dropped with it. The host library
+// that can do it is espressif/usb from 1.6.1, which the ESP32-P4 and S31
+// build; ESP-IDF 5.5's own, on the S2 and S3, can't.
+static void usbhost_xfer_reset_toggle(usb_device_handle_t dev, uint8_t ep) {
+    #if defined(CONFIG_IDF_TARGET_ESP32P4) || defined(CONFIG_IDF_TARGET_ESP32S31)
+    if (usb_host_endpoint_halt(dev, ep) != ESP_OK) {
+        return;     // not an endpoint of a claimed interface: no pipe to reset
+    }
+    usb_host_endpoint_flush(dev, ep);
+    for (int i = 0; i < USBHOST_XFER_MAX_PIPES; i++) {
+        usbhost_xfer_pipe_t *p = &usbhost_xfer_pipes[i];
+        if (p->in_use && p->dev == dev && p->ep == ep) {
+            if (p->busy) {
+                usbhost_xfer_wait(p->done, 100);
+            }
+            p->kept = false;
+            p->rest_len = 0;
+        }
+    }
+    usb_host_endpoint_reset_data_toggle(dev, ep);
+    usb_host_endpoint_clear(dev, ep);
+    #else
+    (void)dev;
+    (void)ep;
+    #endif
+}
+
 int usbhost_xfer_ctrl(uint32_t dev_id, const uint8_t setup[8], uint8_t *data, uint16_t len, uint32_t timeout_ms) {
     usbhost_host_lock();
     int r;
@@ -700,6 +739,9 @@ int usbhost_xfer_ctrl(uint32_t dev_id, const uint8_t setup[8], uint8_t *data, ui
             memcpy(data, x->data_buffer + 8, got);
         }
         r = in ? got : len;
+        if (setup[0] == 0x02 && setup[1] == 0x01 && setup[2] == 0 && setup[3] == 0 && (setup[4] & 0x7f) != 0) {
+            usbhost_xfer_reset_toggle(dev, setup[4]);
+        }
     }
     usb_host_transfer_free(x);
 out:
