@@ -22,6 +22,10 @@ holds every icon at every size, and works for any TrueType font. The same code
 runs on every MicroPython port (`--modules all` has it). On CPython, `ttfio.py`
 in omnipython-desktop gives the same API over FreeType.
 
+[`examples/ttfio_simpletest.py`](examples/ttfio_simpletest.py) draws an icon and prints it as text, then draws it again into a buffer of its own.
+
+[`examples/ttfio_display.py`](examples/ttfio_display.py) sets a row of icons on a baseline like text and shows them on a display through pygraphics.
+
 ## API
 
 ### `ttfio.Font(data, scratch=8192)`
