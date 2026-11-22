@@ -1,5 +1,6 @@
 # ttfio from a bare clone on the unix port: the API test, then FreeType's
-# unhinted drawing of the same icons beside ttfio's.
+# unhinted drawing of the same icons beside ttfio's, then the icons package
+# frozen on top of it, from omnipython-lib at its pinned commit.
 name: ttfio
 
 on:
@@ -8,6 +9,7 @@ on:
     paths:
       - 'modules/ttfio/**'
       - '!modules/ttfio/*.md'
+      - 'modules/icons/**'
       - 'build_mp.py'
       - 'scripts/pins.py'
       - '.github/workflows/ttfio.yml'
@@ -15,6 +17,7 @@ on:
     paths:
       - 'modules/ttfio/**'
       - '!modules/ttfio/*.md'
+      - 'modules/icons/**'
       - 'build_mp.py'
       - 'scripts/pins.py'
       - '.github/workflows/ttfio.yml'
@@ -44,8 +47,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libffi-dev pkg-config
 
-      - name: Build the unix port with ttfio
-        run: python3 build_mp.py --port unix --modules ttfio
+      - name: Build the unix port with ttfio and icons
+        run: python3 build_mp.py --port unix --modules ttfio,icons
 
       - name: The API, its errors, and drawing without allocating
         run: |
@@ -56,3 +59,6 @@ jobs:
         run: |
           python3 -m pip install numpy freetype-py
           python3 modules/ttfio/tests/check_ttfio_freetype.py ttfout
+
+      - name: icons draws every icon, frozen
+        run: timeout 300 ./builds/unix/standard/micropython modules/.omnipython-lib/packages/icons/tests/run.py
