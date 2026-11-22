@@ -586,7 +586,10 @@ static int usbhost_xfer_ep_(uint32_t dev_id, uint8_t ep, uint8_t *data, size_t l
                 r = (int)len;
             }
         }
-    } else if (r == -MP_EPIPE) {
+    } else if (r == -MP_EPIPE || r == -MP_EIO) {
+        // A stall or a transaction error halts the endpoint in IDF's host
+        // library, and every later transfer on it would be refused until
+        // it's cleared.
         usb_host_endpoint_clear(dev, ep);
     }
 out:

@@ -177,6 +177,10 @@ static struct {
     usb_transfer_t *out_xfer;
     bool out_stuck;
     bool out_flushed;
+    // the next IN packet is a transaction error, which halts the endpoint
+    // until it's cleared, as IDF's controller driver does
+    bool in_error;
+    bool in_halted;
     int submits, halts;
 } bus;
 
@@ -220,7 +224,13 @@ esp_err_t usb_host_client_handle_events(usb_host_client_handle_t client, uint32_
             complete(&bus.in_xfer, USB_TRANSFER_STATUS_CANCELED, 0);   // IDF's HCD: a halted transfer is empty
         } else if (bus.landed && now_us >= bus.landed_us + DELIVER_LAG_US) {
             bus.landed = false;
-            complete(&bus.in_xfer, USB_TRANSFER_STATUS_COMPLETED, bus.landed_len);
+            if (bus.in_error) {
+                bus.in_error = false;
+                bus.in_halted = true;
+                complete(&bus.in_xfer, USB_TRANSFER_STATUS_ERROR, 0);
+            } else {
+                complete(&bus.in_xfer, USB_TRANSFER_STATUS_COMPLETED, bus.landed_len);
+            }
         }
     }
     if (bus.out_xfer != NULL) {
@@ -275,6 +285,9 @@ esp_err_t usb_host_transfer_free(usb_transfer_t *x) {
 }
 
 esp_err_t usb_host_transfer_submit(usb_transfer_t *x) {
+    if ((x->bEndpointAddress & 0x80) && bus.in_halted) {
+        return ESP_ERR_INVALID_STATE;
+    }
     bus.submits++;
     if (x->bEndpointAddress & 0x80) {
         CHECK(bus.in_xfer == NULL);     // never two on one endpoint
@@ -312,7 +325,9 @@ esp_err_t usb_host_endpoint_flush(usb_device_handle_t dev, uint8_t ep) {
 
 esp_err_t usb_host_endpoint_clear(usb_device_handle_t dev, uint8_t ep) {
     (void)dev;
-    (void)ep;
+    if (ep & 0x80) {
+        bus.in_halted = false;
+    }
     return ESP_OK;
 }
 
@@ -401,6 +416,18 @@ static void a_pipe_that_cant_grow_keeps_its_transfer(void) {
     CHECK(usbhost_xfer_ep(1, 0x02, data, sizeof(data), 5, false) == (int)sizeof(data));
 }
 
+static void a_transaction_error_leaves_the_endpoint_usable(void) {
+    fake_reset();
+    uint8_t buf[64] = {0};
+    bus.in_error = true;
+    device_sends(now_us + 100, packet, 64);
+    CHECK(usbhost_xfer_ep(1, 0x81, buf, 64, 50, false) == -MP_EIO);
+    // The library halted the endpoint on the error; the next read works.
+    device_sends(now_us + 100, packet, 64);
+    CHECK(usbhost_xfer_ep(1, 0x81, buf, 64, 50, false) == 64);
+    CHECK(memcmp(buf, packet, 64) == 0);
+}
+
 int main(void) {
     for (int i = 0; i < 64; i++) {
         packet[i] = (uint8_t)(i * 7 + 3);
@@ -409,6 +436,7 @@ int main(void) {
     a_packet_landing_as_a_raising_read_times_out_is_kept();
     the_default_reads_quarter_second_steps_lose_nothing();
     a_zero_length_packet_is_0_and_a_timeout_is_not();
+    a_transaction_error_leaves_the_endpoint_usable();
     bytes_beyond_a_short_read_wait_for_the_next();
     an_out_transfer_that_times_out_is_retired();
     a_pipe_that_cant_grow_keeps_its_transfer();
