@@ -17,7 +17,6 @@ typedef struct {
     size_t size;
     size_t used;
     size_t peak;
-    void *jump;
 } ttfio_arena_t;
 
 typedef struct {

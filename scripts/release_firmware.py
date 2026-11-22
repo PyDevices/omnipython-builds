@@ -134,7 +134,7 @@ CELLS = [
     # takes 48 bytes), which is what runs in a few hundred KB.
     dict(id="mp-s3-8mb", label="ESP32-S3 with no PSRAM, 8 MB flash (QT Py ESP32-S3 with no PSRAM)",
          interpreter="micropython", port="esp32", board="ESP32_GENERIC_S3", variant="NO_PSRAM", flash="8MB",
-         modules="omnipython,displayif,pygraphics,pngio,palettes,iconkit,svgio,mdns,jpegio,ulab",
+         modules="omnipython,displayif,pygraphics,pngio,palettes,iconkit,ttfio,icons,svgio,mdns,jpegio,ulab",
          chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
     dict(id="mp-s3-tembed", label="LilyGO T-Embed S3", interpreter="micropython", port="esp32",
          board="ESP32_GENERIC_S3", variant="T_EMBED", flash="16MB", modules="all",
@@ -172,7 +172,7 @@ CELLS = [
          modules="pygraphics,pngio,tsmux,omnipython,palettes,lvgl", chip="rp2040", offset=None, kind="rp2", deps="none"),
     dict(id="mp-giga-shield", label="Arduino GIGA R1 WiFi + GIGA Display Shield", interpreter="micropython",
          port="stm32", board="ARDUINO_GIGA", variant="DISPLAY_SHIELD", flash="2MB",
-         modules="displayif,lvgl,audiodsp,audioif,ulab,usbhost,pygraphics", chip="stm32h747", offset=0x08040000, base=0x08000000,
+         modules="displayif,lvgl,audiodsp,audioif,ulab,usbhost,pygraphics,ttfio,icons", chip="stm32h747", offset=0x08040000, base=0x08000000,
          kind="stm32", deps="none"),
     # Off by default until a board is on the bench to run it on.
     dict(id="mp-pico2", label="Raspberry Pi Pico 2", interpreter="micropython", port="rp2",
