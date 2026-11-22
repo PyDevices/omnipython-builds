@@ -54,7 +54,7 @@ it is. "Unix" is CircuitPython's unix port, built and imported in
 | pngio | yes | all five | Decodes with CircuitPython's older uzlib. |
 | svgio | yes | no | Not named in the board cells yet. |
 | tsmux | yes | all five | |
-| ttfio | no | no | Not built for CircuitPython yet. |
+| ttfio | yes | no | Checked by its own workflow, `ttfio.yml`, with the `icons` package frozen beside it. Not named in the board cells yet. It draws glyph masks; it is not a `fontio` font for displayio yet. |
 | ppa | yes (software) | ESP32-P4 | The hardware path on the P4. |
 | jpegio | yes | ESP32-P4 | Adds only the encoder's C API: CircuitPython has its own `jpegio` decoder. |
 | cameraif | yes (`available()` is False) | ESP32-P4 | |
