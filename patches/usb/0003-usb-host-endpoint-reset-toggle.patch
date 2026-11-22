@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PyDevices <pydevices@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 14:00:00 -0600
+Subject: [PATCH] usb_host: reset an endpoint's data toggle
+
+A device puts an endpoint's data toggle back to DATA0 when it gets
+CLEAR_FEATURE(ENDPOINT_HALT), as in a mass storage reset recovery after a
+failed command. The host library kept its own toggle where it was, so the
+next packet each way was taken as a repeat and dropped, and host and
+device stayed out of step for good.
+
+usb_host_endpoint_reset_toggle() sets a halted endpoint's next data packet
+to DATA0, for a client to call after it sends that request
+(USB_HOST_ENDPOINT_RESET_TOGGLE says it's there).
+
+---
+diff --git a/include/usb/usb_host.h b/include/usb/usb_host.h
+index 03c183c..55d9800 100644
+--- a/include/usb/usb_host.h
++++ b/include/usb/usb_host.h
+@@ -663,6 +663,33 @@ esp_err_t usb_host_endpoint_flush(usb_device_handle_t dev_hdl, uint8_t bEndpoint
+  */
+ esp_err_t usb_host_endpoint_clear(usb_device_handle_t dev_hdl, uint8_t bEndpointAddress);
+ 
++/**
++ * @brief Whether usb_host_endpoint_reset_toggle() is available
++ */
++#define USB_HOST_ENDPOINT_RESET_TOGGLE 1
++
++/**
++ * @brief Reset an endpoint's data toggle to DATA0
++ *
++ * A device puts an endpoint's data toggle back to DATA0 when it gets CLEAR_FEATURE(ENDPOINT_HALT) for it, as in
++ * a mass storage reset recovery. The host's toggle for the endpoint must follow, or the next packet each way is
++ * taken as a repeat and dropped.
++ *
++ * - The endpoint must be part of an interface claimed by a client
++ * - The endpoint must be halted (usb_host_endpoint_halt()), and is cleared afterwards with usb_host_endpoint_clear()
++ *
++ * @note This function can block
++ * @param[in] dev_hdl Device handle
++ * @param[in] bEndpointAddress Endpoint address
++ *
++ * @return
++ *    - ESP_OK: Toggle reset
++ *    - ESP_ERR_INVALID_ARG: Invalid argument
++ *    - ESP_ERR_NOT_FOUND: Endpoint address not found
++ *    - ESP_ERR_INVALID_STATE: Endpoint isn't halted
++ */
++esp_err_t usb_host_endpoint_reset_toggle(usb_device_handle_t dev_hdl, uint8_t bEndpointAddress);
++
+ // ------------------------------------------------ Asynchronous I/O ---------------------------------------------------
+ 
+ /**
+diff --git a/private_include/hcd.h b/private_include/hcd.h
+index 022bade..1261f7a 100644
+--- a/private_include/hcd.h
++++ b/private_include/hcd.h
+@@ -126,6 +126,7 @@ typedef enum {
+     HCD_PIPE_CMD_HALT,              /**< Halt an active pipe. The currently executing URB will be canceled. Enqueued URBs are left untouched */
+     HCD_PIPE_CMD_FLUSH,             /**< Can only be called when halted. Will cause all enqueued URBs to be canceled */
+     HCD_PIPE_CMD_CLEAR,             /**< Causes a halted pipe to become active again. Any enqueued URBs will being executing.*/
++    HCD_PIPE_CMD_RESET_TOGGLE,      /**< Can only be called when halted. The pipe's next data packet is DATA0 */
+ } hcd_pipe_cmd_t;
+ 
+ // -------------------- Object Types -----------------------
+diff --git a/private_include/usbh.h b/private_include/usbh.h
+index e00b63e..4a70466 100644
+--- a/private_include/usbh.h
++++ b/private_include/usbh.h
+@@ -101,6 +101,7 @@ typedef enum {
+     USBH_EP_CMD_HALT,           /**< Halt an active endpoint. Any currently executing URB will be canceled. Enqueued URBs are left untouched */
+     USBH_EP_CMD_FLUSH,          /**< Can only be called when halted. Will cause all enqueued URBs to be canceled */
+     USBH_EP_CMD_CLEAR,          /**< Causes a halted endpoint to become active again. Any enqueued URBs will being executing.*/
++    USBH_EP_CMD_RESET_TOGGLE,   /**< Can only be called when halted. The endpoint's next data packet is DATA0 */
+ } usbh_ep_cmd_t;
+ 
+ /**
+diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
+index b20c264..a442c36 100644
+--- a/src/hcd_dwc.c
++++ b/src/hcd_dwc.c
+@@ -3574,6 +3574,15 @@ esp_err_t hcd_pipe_command(hcd_pipe_handle_t pipe_hdl, hcd_pipe_cmd_t command)
+         ret = _pipe_cmd_clear(pipe);
+         break;
+     }
++    case HCD_PIPE_CMD_RESET_TOGGLE: {
++        // The device's toggle went back to DATA0 with CLEAR_FEATURE(ENDPOINT_HALT); the channel's must too
++        if (pipe->state != HCD_PIPE_STATE_HALTED) {
++            ret = ESP_ERR_INVALID_STATE;
++        } else {
++            usb_dwc_hal_chan_set_pid(pipe->chan_obj, 0);
++        }
++        break;
++    }
+     }
+     pipe->cs_flags.pipe_cmd_processing = 0;
+     HCD_EXIT_CRITICAL();
+diff --git a/src/usb_host.c b/src/usb_host.c
+index fa31721..2ecfa44 100644
+--- a/src/usb_host.c
++++ b/src/usb_host.c
+@@ -1935,6 +1935,25 @@ exit:
+     return ret;
+ }
+ 
++esp_err_t usb_host_endpoint_reset_toggle(usb_device_handle_t dev_hdl, uint8_t bEndpointAddress)
++{
++    esp_err_t ret;
++    usbh_ep_handle_t ep_hdl;
++
++    ret = usbh_ep_get_handle(dev_hdl, bEndpointAddress, &ep_hdl);
++    if (ret != ESP_OK) {
++        print_error_ep_get_handle(ret);
++        goto exit;
++    }
++    ret = usbh_ep_command(ep_hdl, USBH_EP_CMD_RESET_TOGGLE);
++    if (ret != ESP_OK) {
++        print_error_ep_command(ret);
++    }
++
++exit:
++    return ret;
++}
++
+ // ------------------------------------------------ Asynchronous I/O ---------------------------------------------------
+ 
+ // ----------------------- Public --------------------------

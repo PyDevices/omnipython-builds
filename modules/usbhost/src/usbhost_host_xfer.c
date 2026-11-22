@@ -653,6 +653,35 @@ static void usbhost_xfer_drop_pipes(usb_device_handle_t dev, int itf, bool devic
 
 // -- control
 
+// CLEAR_FEATURE(ENDPOINT_HALT) puts the device's data toggle for the
+// endpoint back to DATA0, so the host's goes back too, as libusb's
+// clear_halt does. Without it, a mass storage reset recovery after a failed
+// command left host and device a packet out of step on every later
+// command. Whatever the endpoint held is dropped with it.
+static void usbhost_xfer_reset_toggle(usb_device_handle_t dev, uint8_t ep) {
+    #if defined(USB_HOST_ENDPOINT_RESET_TOGGLE)
+    if (usb_host_endpoint_halt(dev, ep) != ESP_OK) {
+        return;     // not an endpoint of a claimed interface: no pipe to reset
+    }
+    usb_host_endpoint_flush(dev, ep);
+    for (int i = 0; i < USBHOST_XFER_MAX_PIPES; i++) {
+        usbhost_xfer_pipe_t *p = &usbhost_xfer_pipes[i];
+        if (p->in_use && p->dev == dev && p->ep == ep) {
+            if (p->busy) {
+                usbhost_xfer_wait(p->done, 100);
+            }
+            p->kept = false;
+            p->rest_len = 0;
+        }
+    }
+    usb_host_endpoint_reset_toggle(dev, ep);
+    usb_host_endpoint_clear(dev, ep);
+    #else
+    (void)dev;
+    (void)ep;
+    #endif
+}
+
 int usbhost_xfer_ctrl(uint32_t dev_id, const uint8_t setup[8], uint8_t *data, uint16_t len, uint32_t timeout_ms) {
     usbhost_host_lock();
     int r;
@@ -708,6 +737,9 @@ int usbhost_xfer_ctrl(uint32_t dev_id, const uint8_t setup[8], uint8_t *data, ui
             memcpy(data, x->data_buffer + 8, got);
         }
         r = in ? got : len;
+        if (setup[0] == 0x02 && setup[1] == 0x01 && setup[2] == 0 && setup[3] == 0 && (setup[4] & 0x7f) != 0) {
+            usbhost_xfer_reset_toggle(dev, setup[4]);
+        }
     }
     usb_host_transfer_free(x);
 out:
