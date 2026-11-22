@@ -30,6 +30,7 @@
 !/modules/offheap/
 !/modules/pngio/
 !/modules/svgio/
+!/modules/ttfio/
 !/modules/picotts/
 !/modules/tflite/
 !/modules/vision/

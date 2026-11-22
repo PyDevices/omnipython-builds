@@ -1,0 +1,14 @@
+stb_truetype v1.28, by Sean Barrett / RAD Game Tools
+Upstream: https://github.com/nothings/stb
+File: stb_truetype.h, at commit
+  9f755b604db3492df2cbeb39bf84b81e3e3932e3
+MIT or public domain, at your choice (LICENSE, the file's own closing block).
+
+Changes:
+
+1. stbtt__hheap_alloc: the active-edge allocator takes 16 edges a chunk, not
+   2000 (or 800, or 100, by edge size). A chunk of 2000 is about 29 KB of
+   scratch for a glyph that has a handful of edges active at once; with 16, a
+   Material Symbols icon peaks at about 6.5 KB and the pixels are identical
+   (checked over 129 icons at 16, 18, 20 and 24 px). ttfio runs stb from one
+   fixed buffer, so the chunk size sets how big that buffer must be.

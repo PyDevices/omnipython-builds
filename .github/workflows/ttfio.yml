@@ -1,0 +1,58 @@
+# ttfio from a bare clone on the unix port: the API test, then FreeType's
+# unhinted drawing of the same icons beside ttfio's.
+name: ttfio
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/ttfio/**'
+      - '!modules/ttfio/*.md'
+      - 'build_mp.py'
+      - 'scripts/pins.py'
+      - '.github/workflows/ttfio.yml'
+  pull_request:
+    paths:
+      - 'modules/ttfio/**'
+      - '!modules/ttfio/*.md'
+      - 'build_mp.py'
+      - 'scripts/pins.py'
+      - '.github/workflows/ttfio.yml'
+  # Everything, weekly: the path filters skip what a change can't reach.
+  schedule:
+    - cron: '55 6 * * 1'
+  workflow_dispatch:
+
+# A new push to a pull request cancels the run it supersedes. A push to main is
+# never cancelled: each one keeps its own record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the unix port's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libffi-dev pkg-config
+
+      - name: Build the unix port with ttfio
+        run: python3 build_mp.py --port unix --modules ttfio
+
+      - name: The API, its errors, and drawing without allocating
+        run: |
+          mkdir -p ttfout
+          timeout 120 ./builds/unix/standard/micropython modules/ttfio/tests/test_ttfio.py --out ttfout
+
+      - name: The same icons as FreeType draws them
+        run: |
+          python3 -m pip install numpy freetype-py
+          python3 modules/ttfio/tests/check_ttfio_freetype.py ttfout
