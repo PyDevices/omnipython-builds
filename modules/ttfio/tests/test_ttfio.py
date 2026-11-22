@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""ttfio on MicroPython: the API, its errors, and drawing without allocating.
+"""ttfio: the API, its errors, and drawing without allocating.
 
     micropython test_ttfio.py [--out DIR]
+
+It runs unchanged on CPython against omnipython-desktop's ttfio.py, which
+skips the checks of the scratch buffer.
 
 Bars fixed before the first run:
 
@@ -28,10 +31,11 @@ import sys
 
 import ttfio
 
-try:
+# The scratch buffer and the heap lock are MicroPython's; on CPython this runs
+# against omnipython-desktop's ttfio.py and skips those checks.
+ON_MICROPYTHON = sys.implementation.name == "micropython"
+if ON_MICROPYTHON:
     import micropython
-except ImportError:
-    micropython = None
 
 HERE = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
 ICONS = {
@@ -120,24 +124,29 @@ check(inside == alone and outside_ok, "render(buf, stride=32) writes the box and
 # A frozen font is a bytes object in flash; a memoryview of it is read in place too.
 check(ttfio.Font(memoryview(DATA)).render(cp, 20) == alone, "a memoryview of the font draws the same")
 
-if micropython:
+if ON_MICROPYTHON:
     out = bytearray(64 * 64)
+    # Every name the locked loop sets exists first: a new global grows the
+    # module's dict, which would allocate.
+    px = 0
+    locked = "render() raised MemoryError"
     micropython.heap_lock()
     try:
         for px in (16, 20, 24, 48):
             font.render(cp, px, out)
         locked = None
-    except MemoryError as e:
-        locked = str(e)
+    except MemoryError:
+        pass
     micropython.heap_unlock()
     check(locked is None, "render() into a buffer allocates nothing (heap locked)")
     check(0 < font.scratch_peak <= 8192, "scratch_peak after a 48 px icon: %d bytes" % font.scratch_peak)
 
-# The settings icon needs about 6.5 KB at 20 px and 21 KB at 1000 px.
-err = raises(MemoryError, font.render, cp, 1000)
-check(err is not None and "scratch" in err, "too little scratch raises MemoryError: %r" % (err,))
-check(font.render(cp, 20) == alone, "the same Font draws correctly after the error")
-check(len(ttfio.Font(DATA, scratch=32768).render(cp, 1000)) > 0, "Font(scratch=32768) draws it at 1000 px")
+if ON_MICROPYTHON:
+    # The settings icon needs about 6.5 KB at 20 px and 21 KB at 1000 px.
+    err = raises(MemoryError, font.render, cp, 1000)
+    check(err is not None and "scratch" in err, "too little scratch raises MemoryError: %r" % (err,))
+    check(font.render(cp, 20) == alone, "the same Font draws correctly after the error")
+    check(len(ttfio.Font(DATA, scratch=32768).render(cp, 1000)) > 0, "Font(scratch=32768) draws it at 1000 px")
 
 check(raises(ValueError, ttfio.Font, b"not a font at all") is not None, "Font(junk) raises ValueError")
 check(raises(ValueError, ttfio.Font, DATA, scratch=16) is not None, "Font(scratch=16) raises ValueError")
