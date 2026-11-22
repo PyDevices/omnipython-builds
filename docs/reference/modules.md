@@ -22,6 +22,7 @@ tracked here or linked from a sibling checkout or cloned at the commit in
 | [`ppa`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/ppa) | Scale, rotate, convert and fill pixel buffers, on the ESP32-P4's Pixel Processing Accelerator or in portable C elsewhere. |
 | [`svgio`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/svgio) | SVG decode at any size, RGB565 with alpha, and an LVGL image decoder. |
 | [`tsmux`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/tsmux) | MPEG-TS and HLS segments from H.264. |
+| [`ttfio`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/ttfio) | TrueType glyphs drawn from a font where it lies, frozen in flash or loaded, with no heap use per glyph. |
 | [`usbhost`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/usbhost) | The USB host port and isochronous streams that `usb.core` and the `usb.host.*` packages are built on (ESP32-S2, S3 and P4, and the Arduino GIGA R1's USB-A port without isochronous streams). |
 
 ## Modules from other repositories
@@ -53,6 +54,7 @@ it is. "Unix" is CircuitPython's unix port, built and imported in
 | pngio | yes | all five | Decodes with CircuitPython's older uzlib. |
 | svgio | yes | no | Not named in the board cells yet. |
 | tsmux | yes | all five | |
+| ttfio | no | no | Not built for CircuitPython yet. |
 | ppa | yes (software) | ESP32-P4 | The hardware path on the P4. |
 | jpegio | yes | ESP32-P4 | Adds only the encoder's C API: CircuitPython has its own `jpegio` decoder. |
 | cameraif | yes (`available()` is False) | ESP32-P4 | |
