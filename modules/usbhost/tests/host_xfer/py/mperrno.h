@@ -9,5 +9,6 @@
 #define MP_EINVAL (22)
 #define MP_E2BIG (7)
 #define MP_ENOENT (2)
+#define MP_ENOSPC (28)
 #define MP_EPIPE (32)
 #define MP_ETIMEDOUT (110)
