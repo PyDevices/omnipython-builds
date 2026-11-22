@@ -455,32 +455,37 @@ static usbhost_xfer_pipe_t *usbhost_xfer_pipe(usb_device_handle_t dev, uint8_t e
     if (size == 0) {
         size = mps;
     }
-    if (pipe != NULL && (pipe->mps != mps || (size_t)pipe->xfer->data_buffer_size < size)) {
-        usb_host_transfer_free(pipe->xfer);
-        pipe->xfer = NULL;
+    if (pipe != NULL && pipe->mps == mps && (size_t)pipe->xfer->data_buffer_size >= size) {
+        return pipe;
+    }
+    if (pipe == NULL && free_slot == NULL) {
+        *err = -MP_ENOMEM;
+        return NULL;
+    }
+    // The new transfer first: if there's no memory for it, the pipe keeps the
+    // one it has, and a later, smaller read still works.
+    usb_transfer_t *xfer;
+    if (usbhost_host_pipe_transfer_alloc(size, &xfer) != ESP_OK) {
+        *err = -MP_ENOMEM;
+        return NULL;
     }
     if (pipe == NULL) {
-        if (free_slot == NULL) {
+        SemaphoreHandle_t done = xSemaphoreCreateBinary();
+        if (done == NULL) {
+            usb_host_transfer_free(xfer);
             *err = -MP_ENOMEM;
             return NULL;
         }
         pipe = free_slot;
         memset(pipe, 0, sizeof(*pipe));
-        pipe->done = xSemaphoreCreateBinary();
-        if (pipe->done == NULL) {
-            *err = -MP_ENOMEM;
-            return NULL;
-        }
+        pipe->done = done;
         pipe->in_use = true;
         pipe->dev = dev;
         pipe->ep = ep;
+    } else {
+        usb_host_transfer_free(pipe->xfer);
     }
-    if (pipe->xfer == NULL) {
-        if (usbhost_host_in_transfer_alloc(size, 0, &pipe->xfer) != ESP_OK) {
-            *err = -MP_ENOMEM;
-            return NULL;
-        }
-    }
+    pipe->xfer = xfer;
     pipe->mps = mps;
     return pipe;
 }

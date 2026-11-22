@@ -133,6 +133,16 @@ esp_err_t usbhost_host_in_transfer_alloc(size_t size, int num_isoc_packets, usb_
     return usb_host_transfer_alloc(size, num_isoc_packets, out);
 }
 
+// Set to run the pipe allocations out of memory.
+static bool pipe_alloc_fails;
+
+esp_err_t usbhost_host_pipe_transfer_alloc(size_t size, usb_transfer_t **out) {
+    if (pipe_alloc_fails) {
+        return ESP_ERR_NO_MEM;
+    }
+    return usb_host_transfer_alloc(size, 0, out);
+}
+
 void usbhost_stream_stop_itf(void *dev, int itf, bool device_gone) {
     (void)dev;
     (void)itf;
@@ -378,6 +388,19 @@ static void an_out_transfer_that_times_out_is_retired(void) {
     CHECK(usbhost_xfer_ep(1, 0x02, data, sizeof(data), 5, false) == (int)sizeof(data));
 }
 
+static void a_pipe_that_cant_grow_keeps_its_transfer(void) {
+    fake_reset();
+    uint8_t data[200] = {1};
+    CHECK(usbhost_xfer_ep(1, 0x02, data, 31, 5, false) == 31);
+    // A bigger write needs a bigger transfer, and there's no memory for one.
+    pipe_alloc_fails = true;
+    CHECK(usbhost_xfer_ep(1, 0x02, data, sizeof(data), 5, false) == -MP_ENOMEM);
+    // The pipe still has the transfer it had, so a write that fits it works.
+    CHECK(usbhost_xfer_ep(1, 0x02, data, 31, 5, false) == 31);
+    pipe_alloc_fails = false;
+    CHECK(usbhost_xfer_ep(1, 0x02, data, sizeof(data), 5, false) == (int)sizeof(data));
+}
+
 int main(void) {
     for (int i = 0; i < 64; i++) {
         packet[i] = (uint8_t)(i * 7 + 3);
@@ -388,6 +411,7 @@ int main(void) {
     a_zero_length_packet_is_0_and_a_timeout_is_not();
     bytes_beyond_a_short_read_wait_for_the_next();
     an_out_transfer_that_times_out_is_retired();
+    a_pipe_that_cant_grow_keeps_its_transfer();
     if (failures) {
         printf("%d FAILED\n", failures);
         return 1;

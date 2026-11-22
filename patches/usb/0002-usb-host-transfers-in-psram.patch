@@ -1,0 +1,256 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: PyDevices <pydevices@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 12:00:00 -0600
+Subject: [PATCH] usb_host: transfers whose data buffer is in PSRAM
+
+Every transfer's data buffer comes from internal DMA capable RAM unless
+USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM moves all of them, frame list and
+descriptor lists included, to PSRAM. A client with a few large bulk
+buffers, such as several mass storage devices read in 32 KB transfers,
+runs internal RAM out while PSRAM sits empty.
+
+usb_host_transfer_alloc_psram() allocates one transfer's data buffer in
+PSRAM, on the ESP32-P4 and ESP32-S31 with PSRAM enabled
+(USB_HOST_TRANSFER_ALLOC_PSRAM says it's there). Everything else stays where
+it was.
+
+The HCD syncs the cache for such a buffer. On the ESP32-P4 it already syncs
+every data buffer. On the ESP32-S31 internal RAM isn't cached, so the data
+buffer sync is now compiled in whenever PSRAM is enabled and skips a buffer
+that isn't in external RAM. The isochronous complete-split copy into the
+transfer's buffer is written back the same way.
+
+---
+diff --git a/include/usb/usb_host.h b/include/usb/usb_host.h
+index b6ae4d0..03c183c 100644
+--- a/include/usb/usb_host.h
++++ b/include/usb/usb_host.h
+@@ -689,6 +689,34 @@ esp_err_t usb_host_endpoint_clear(usb_device_handle_t dev_hdl, uint8_t bEndpoint
+  */
+ esp_err_t usb_host_transfer_alloc(size_t data_buffer_size, int num_isoc_packets, usb_transfer_t **transfer);
+ 
++#if (CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31) && CONFIG_SPIRAM
++/**
++ * @brief Whether usb_host_transfer_alloc_psram() is available
++ *
++ * Defined where the USB-DWC internal DMA can reach external RAM and PSRAM is enabled.
++ */
++#define USB_HOST_TRANSFER_ALLOC_PSRAM 1
++
++/**
++ * @brief Allocate a transfer object whose data buffer is in PSRAM
++ *
++ * As usb_host_transfer_alloc(), but the data buffer comes from PSRAM whatever
++ * CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM says. Large buffers, such as a mass
++ * storage device's bulk reads, then leave internal RAM free for everything else.
++ * The host driver syncs the cache for such a buffer as it does for any buffer in
++ * cached memory. Free it with usb_host_transfer_free().
++ *
++ * @param[in] data_buffer_size Size of the transfer's data buffer
++ * @param[in] num_isoc_packets Number of isochronous packets in transfer (set to 0 for non-isochronous transfers)
++ * @param[out] transfer Transfer object
++ *
++ * @return
++ *    - ESP_OK: Transfer object allocated successfully
++ *    - ESP_ERR_NO_MEM: Insufficient memory
++ */
++esp_err_t usb_host_transfer_alloc_psram(size_t data_buffer_size, int num_isoc_packets, usb_transfer_t **transfer);
++#endif
++
+ /**
+  * @brief Free a transfer object
+  *
+diff --git a/private_include/usb_private.h b/private_include/usb_private.h
+index d808623..25a3a5a 100644
+--- a/private_include/usb_private.h
++++ b/private_include/usb_private.h
+@@ -88,6 +88,20 @@ typedef bool (*usb_proc_req_cb_t)(usb_proc_req_source_t source, bool in_isr, voi
+  */
+ urb_t *urb_alloc(size_t data_buffer_size, int num_isoc_packets);
+ 
++/**
++ * @brief Allocate a URB whose data buffer comes from memory with the given capabilities
++ *
++ * As urb_alloc(), with data_buffer_caps in place of the default DMA capable memory.
++ *
++ * @param[in] data_buffer_size Size of the URB's data buffer
++ * @param[in] num_isoc_packets Number of isochronous packet descriptors
++ * @param[in] data_buffer_caps Heap capabilities for the data buffer
++ *
++ * @return
++ *    - urb_t* URB object
++ */
++urb_t *urb_alloc_caps(size_t data_buffer_size, int num_isoc_packets, uint32_t data_buffer_caps);
++
+ /**
+  * @brief Free a URB
+  *
+diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
+index eddef40..b20c264 100644
+--- a/src/hcd_dwc.c
++++ b/src/hcd_dwc.c
+@@ -129,19 +129,40 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
+ #define CACHED_MEMORY_SYNC                          0
+ #endif // SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE || CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM
+ 
++/*
++ * A data buffer can be in PSRAM without CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM, when it was allocated
++ * by usb_host_transfer_alloc_psram(). On the esp32s31, where internal RAM isn't cached, such a buffer is
++ * synced on its own: DATA_BUFFER_SYNC is set and data_buffer_cached() tells it apart.
++ */
++#if (CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31) && CONFIG_SPIRAM
++#define DATA_BUFFER_IN_PSRAM_ALLOWED                1
++#else
++#define DATA_BUFFER_IN_PSRAM_ALLOWED                0
++#endif
++
++#if CACHED_MEMORY_SYNC || DATA_BUFFER_IN_PSRAM_ALLOWED
++#define DATA_BUFFER_SYNC                            1
++#else
++#define DATA_BUFFER_SYNC                            0
++#endif
++
+ #if CACHED_MEMORY_SYNC
+ #define CACHE_SYNC_FRAME_LIST(frame_list)           cache_sync_frame_list(frame_list)
+ #define CACHE_SYNC_XFER_DESCRIPTOR_LIST_M2C(buffer) cache_sync_xfer_descriptor_list(buffer, true)
+ #define CACHE_SYNC_XFER_DESCRIPTOR_LIST_C2M(buffer) cache_sync_xfer_descriptor_list(buffer, false)
+-#define CACHE_SYNC_DATA_BUFFER_M2C(pipe, urb)       cache_sync_data_buffer(pipe, urb, true)
+-#define CACHE_SYNC_DATA_BUFFER_C2M(pipe, urb)       cache_sync_data_buffer(pipe, urb, false)
+ #else // CACHED_MEMORY_SYNC
+ #define CACHE_SYNC_FRAME_LIST(frame_list)
+ #define CACHE_SYNC_XFER_DESCRIPTOR_LIST_M2C(buffer)
+ #define CACHE_SYNC_XFER_DESCRIPTOR_LIST_C2M(buffer)
++#endif // CACHED_MEMORY_SYNC
++
++#if DATA_BUFFER_SYNC
++#define CACHE_SYNC_DATA_BUFFER_M2C(pipe, urb)       cache_sync_data_buffer(pipe, urb, true)
++#define CACHE_SYNC_DATA_BUFFER_C2M(pipe, urb)       cache_sync_data_buffer(pipe, urb, false)
++#else // DATA_BUFFER_SYNC
+ #define CACHE_SYNC_DATA_BUFFER_M2C(pipe, urb)
+ #define CACHE_SYNC_DATA_BUFFER_C2M(pipe, urb)
+-#endif // CACHED_MEMORY_SYNC
++#endif // DATA_BUFFER_SYNC
+ 
+ #if CONFIG_USB_HOST_DWC_SPLIT_TRANSACTIONS
+ #define HCD_BUFFER_DMA                              1
+@@ -397,6 +418,25 @@ static inline void cache_sync_xfer_descriptor_list(dma_buffer_block_t *buffer, b
+     (void)ret;
+ }
+ 
++#endif // CACHED_MEMORY_SYNC
++
++#if DATA_BUFFER_SYNC
++/**
++ * @brief Check if a data buffer resides in cacheable memory
++ *
++ * Every buffer is cached where CACHED_MEMORY_SYNC is set. Otherwise only one in PSRAM is, which
++ * usb_host_transfer_alloc_psram() can hand out.
++ */
++static inline __attribute__((always_inline)) bool data_buffer_cached(const void *buf)
++{
++#if CACHED_MEMORY_SYNC
++    (void)buf;
++    return true;
++#else
++    return esp_ptr_external_ram(buf);
++#endif
++}
++
+ /**
+  * @brief Sync Transfer data buffer
+  *
+@@ -415,8 +455,7 @@ static inline void cache_sync_xfer_descriptor_list(dma_buffer_block_t *buffer, b
+  *   copies.
+  *
+  * @note Here we also accept UNALIGNED data, for cases where the class drivers force overwrite the allocated data slots
+- * @note The data buffer is always in cacheable memory when this function is compiled in:
+- *       either internal RAM is cached (SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE), or it is allocated in PSRAM
++ * @note A data buffer in memory that isn't cached (internal RAM on the esp32s31) is left alone
+  *
+  * @param[in] pipe Pipe belonging to this data buffer
+  * @param[in] urb  URB belonging to this data buffer
+@@ -426,6 +465,9 @@ static inline void cache_sync_data_buffer(pipe_t *pipe, urb_t *urb, bool done)
+ {
+     const bool is_in = pipe->ep_char.bEndpointAddress & USB_B_ENDPOINT_ADDRESS_EP_DIR_MASK;
+     const bool is_ctrl = (pipe->ep_char.type == USB_DWC_XFER_TYPE_CTRL);
++    if (!data_buffer_cached(urb->transfer.data_buffer)) {
++        return;
++    }
+     // Writeback at enqueue for every direction (!done); invalidate at dequeue for IN/CTRL (is_in || is_ctrl)
+     if (!done || is_in || is_ctrl) {
+         // Enqueue: writeback (C2M). Dequeue: invalidate (M2C). UNALIGNED permits non-cache-line-aligned buffers.
+@@ -436,7 +478,7 @@ static inline void cache_sync_data_buffer(pipe_t *pipe, urb_t *urb, bool done)
+         (void)ret;
+     }
+ }
+-#endif // CACHED_MEMORY_SYNC
++#endif // DATA_BUFFER_SYNC
+ 
+ // ------------------- Buffer Control ----------------------
+ 
+@@ -1385,8 +1427,10 @@ static usb_dwc_hal_chan_event_t bd_isoc_split(pipe_t *pipe, uint32_t hcint, uint
+             esp_cache_msync(pipe->split_in_buf, pipe->split_in_buf_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+ #endif
+             memcpy(qtd->buffer + bd->done, pipe->split_in_buf, moved);
+-#if CACHED_MEMORY_SYNC
+-            esp_cache_msync(qtd->buffer + bd->done, moved, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
++#if DATA_BUFFER_SYNC
++            if (data_buffer_cached(qtd->buffer)) {
++                esp_cache_msync(qtd->buffer + bd->done, moved, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
++            }
+ #endif
+         }
+         bd->done += moved;
+diff --git a/src/usb_host.c b/src/usb_host.c
+index 1c8e4cd..fa31721 100644
+--- a/src/usb_host.c
++++ b/src/usb_host.c
+@@ -1949,6 +1949,19 @@ esp_err_t usb_host_transfer_alloc(size_t data_buffer_size, int num_isoc_packets,
+     return ESP_OK;
+ }
+ 
++#if USB_HOST_TRANSFER_ALLOC_PSRAM
++esp_err_t usb_host_transfer_alloc_psram(size_t data_buffer_size, int num_isoc_packets, usb_transfer_t **transfer)
++{
++    urb_t *urb = urb_alloc_caps(data_buffer_size, num_isoc_packets,
++                                MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED | MALLOC_CAP_SPIRAM);
++    if (urb == NULL) {
++        return ESP_ERR_NO_MEM;
++    }
++    *transfer = &urb->transfer;
++    return ESP_OK;
++}
++#endif // USB_HOST_TRANSFER_ALLOC_PSRAM
++
+ esp_err_t usb_host_transfer_free(usb_transfer_t *transfer)
+ {
+     if (transfer == NULL) {
+diff --git a/src/usb_private.c b/src/usb_private.c
+index 3554ee3..4201e4c 100644
+--- a/src/usb_private.c
++++ b/src/usb_private.c
+@@ -25,17 +25,22 @@
+ #endif
+ 
+ urb_t *urb_alloc(size_t data_buffer_size, int num_isoc_packets)
++{
++    return urb_alloc_caps(data_buffer_size, num_isoc_packets, DATA_BUFFER_CAPS);
++}
++
++urb_t *urb_alloc_caps(size_t data_buffer_size, int num_isoc_packets, uint32_t data_buffer_caps)
+ {
+     urb_t *urb = heap_caps_calloc(1, sizeof(urb_t) + (sizeof(usb_isoc_packet_desc_t) * num_isoc_packets), MALLOC_CAP_DEFAULT);
+ 
+ #if !CONFIG_IDF_TARGET_LINUX
+     // Note for developers: We do not use heap_caps_get_allocated_size() because it is broken with HEAP_POISONING=COMPREHENSIVE
+     size_t cache_align = 0;
+-    esp_cache_get_alignment(DATA_BUFFER_CAPS, &cache_align);
++    esp_cache_get_alignment(data_buffer_caps, &cache_align);
+     data_buffer_size = ALIGN_UP(data_buffer_size, cache_align);
+ #endif
+ 
+-    void *data_buffer = heap_caps_malloc(data_buffer_size, DATA_BUFFER_CAPS);
++    void *data_buffer = heap_caps_malloc(data_buffer_size, data_buffer_caps);
+     if (urb == NULL || data_buffer == NULL)     {
+         goto err;
+     }

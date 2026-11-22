@@ -91,8 +91,9 @@
 #include "usbhost_ticks.h"
 #include "esp_timer.h"
 #include "esp_system.h"
-#if SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE
+#if SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE || defined(USB_HOST_TRANSFER_ALLOC_PSRAM)
 #include "esp_cache.h"
+#include "esp_memory_utils.h"
 #endif
 
 #if defined(MICROPY_HW_ENABLE_USBDEV) && MICROPY_HW_ENABLE_USBDEV
@@ -161,9 +162,16 @@ static usb_host_client_handle_t usbhost_host_client;
 // left modified by the memory's previous owner, or by the allocator's free
 // list, can be evicted first, and then lands on top of what the controller
 // wrote: packets that report complete and hold old memory. It happens on a
-// buffer's first use, since completing invalidates its lines.
+// buffer's first use, since completing invalidates its lines. A buffer in
+// PSRAM is cached on every chip that can have one (see
+// usbhost_host_pipe_transfer_alloc()).
 void usbhost_host_in_transfer_clean(usb_transfer_t *x) {
-    #if SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE
+    #if SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE || defined(USB_HOST_TRANSFER_ALLOC_PSRAM)
+    #if !SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE
+    if (!esp_ptr_external_ram(x->data_buffer)) {
+        return;
+    }
+    #endif
     esp_err_t err = esp_cache_msync(x->data_buffer, x->data_buffer_size,
         ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
     assert(err == ESP_OK);
@@ -180,6 +188,27 @@ esp_err_t usbhost_host_in_transfer_alloc(size_t size, int num_isoc_packets, usb_
         usbhost_host_in_transfer_clean(*out);
     }
     return err;
+}
+
+// A usb.core pipe's transfer, sized to the endpoint's largest read or write
+// so far. Where the controller's DMA reaches PSRAM, a large buffer goes
+// there: a flash drive read in 32 KB transfers holds 32 KB a direction, and
+// internal RAM ran out at the second drive while PSRAM sat empty. Small
+// buffers, a keyboard's or a MIDI port's, stay in internal RAM.
+#define USBHOST_HOST_PSRAM_MIN (4096)
+
+esp_err_t usbhost_host_pipe_transfer_alloc(size_t size, usb_transfer_t **out) {
+    #if defined(USB_HOST_TRANSFER_ALLOC_PSRAM)
+    if (size >= USBHOST_HOST_PSRAM_MIN) {
+        esp_err_t err = usb_host_transfer_alloc_psram(size, 0, out);
+        if (err == ESP_OK) {
+            memset((*out)->data_buffer, 0, (*out)->data_buffer_size);
+            usbhost_host_in_transfer_clean(*out);
+        }
+        return err;
+    }
+    #endif
+    return usbhost_host_in_transfer_alloc(size, 0, out);
 }
 
 // The client handle is not safe to drive from two tasks at once. The host
