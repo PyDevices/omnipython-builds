@@ -37,7 +37,8 @@ ON_MICROPYTHON = sys.implementation.name == "micropython"
 if ON_MICROPYTHON:
     import micropython
 
-HERE = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
+_FILE = __file__.replace("\\", "/")  # Windows paths too
+HERE = _FILE.rsplit("/", 1)[0] if "/" in _FILE else "."
 ICONS = {
     "wifi": 0xE63E,
     "bluetooth": 0xE1A7,
