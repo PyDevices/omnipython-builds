@@ -9,7 +9,7 @@
 LD_FILES += $(BOARD_DIR)/cyw43_qspi.ld
 TEXT1_ADDR = 0x90F00000
 TEXT0_SECTIONS = .isr_vector .isr_extratext .text .gc.blocks.table .data .ARM
-TEXT1_SECTIONS = .cyw43_fw
+TEXT1_SECTIONS = .cyw43_fw .qspi_rodata
 
 # Bluetooth LE through NimBLE, over UART7 to the Murata 1DX, as upstream's
 # ARDUINO_GIGA has it. Its patch for the radio is a CYW43 resource like the
@@ -22,6 +22,12 @@ CFLAGS += -DULAB_CONFIG_FILE='"ulab_config.h"'
 # LVGL without its 40 px font, to make room as well. A program that wants it
 # can load omnipython-lvgl's montserrat_40.bin at run time.
 CFLAGS += -DLV_FONT_MONTSERRAT_40=0
+
+# LVGL's built-in font bitmaps (LV_ATTRIBUTE_LARGE_CONST) go to the same QSPI
+# region, read in place like the ROMFS. Only the main thread draws text, and
+# the QSPI leaves memory-mapped mode only while that thread writes the flash
+# filesystem, so nothing reads a glyph while it is away.
+CFLAGS += -DLV_ATTRIBUTE_LARGE_CONST='__attribute__((section(".qspi_rodata")))'
 
 # The DSI host and LTDC drivers that displayif's mipidsi uses. The
 # stm32h7xx_hal_conf.h beside this file enables them.
