@@ -657,9 +657,11 @@ static void usbhost_xfer_drop_pipes(usb_device_handle_t dev, int itf, bool devic
 // endpoint back to DATA0, so the host's goes back too, as libusb's
 // clear_halt does. Without it, a mass storage reset recovery after a failed
 // command left host and device a packet out of step on every later
-// command. Whatever the endpoint held is dropped with it.
+// command. Whatever the endpoint held is dropped with it. The host library
+// that can do it is espressif/usb from 1.6.1, which the ESP32-P4 and S31
+// build; ESP-IDF 5.5's own, on the S2 and S3, can't.
 static void usbhost_xfer_reset_toggle(usb_device_handle_t dev, uint8_t ep) {
-    #if defined(USB_HOST_ENDPOINT_RESET_TOGGLE)
+    #if defined(CONFIG_IDF_TARGET_ESP32P4) || defined(CONFIG_IDF_TARGET_ESP32S31)
     if (usb_host_endpoint_halt(dev, ep) != ESP_OK) {
         return;     // not an endpoint of a claimed interface: no pipe to reset
     }
@@ -674,7 +676,7 @@ static void usbhost_xfer_reset_toggle(usb_device_handle_t dev, uint8_t ep) {
             p->rest_len = 0;
         }
     }
-    usb_host_endpoint_reset_toggle(dev, ep);
+    usb_host_endpoint_reset_data_toggle(dev, ep);
     usb_host_endpoint_clear(dev, ep);
     #else
     (void)dev;
