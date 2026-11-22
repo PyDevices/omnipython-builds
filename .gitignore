@@ -31,6 +31,7 @@
 !/modules/pngio/
 !/modules/svgio/
 !/modules/ttfio/
+!/modules/icons/
 !/modules/picotts/
 !/modules/tflite/
 !/modules/vision/

@@ -6,8 +6,8 @@
 
     micropython test_ttfio.py [--out DIR]
 
-It runs unchanged on CPython against omnipython-desktop's ttfio.py, which
-skips the checks of the scratch buffer.
+It runs unchanged on CircuitPython built with ttfio, and on CPython against
+omnipython-desktop's ttfio.py, which skips the checks of the scratch buffer.
 
 Bars fixed before the first run:
 
@@ -31,10 +31,11 @@ import sys
 
 import ttfio
 
-# The scratch buffer and the heap lock are MicroPython's; on CPython this runs
-# against omnipython-desktop's ttfio.py and skips those checks.
-ON_MICROPYTHON = sys.implementation.name == "micropython"
-if ON_MICROPYTHON:
+# The scratch buffer and the heap lock are the C module's, on MicroPython and
+# CircuitPython alike; on CPython this runs against omnipython-desktop's
+# ttfio.py and skips those checks.
+IN_C = sys.implementation.name != "cpython"
+if IN_C:
     import micropython
 
 _FILE = __file__.replace("\\", "/")  # Windows paths too
@@ -125,7 +126,7 @@ check(inside == alone and outside_ok, "render(buf, stride=32) writes the box and
 # A frozen font is a bytes object in flash; a memoryview of it is read in place too.
 check(ttfio.Font(memoryview(DATA)).render(cp, 20) == alone, "a memoryview of the font draws the same")
 
-if ON_MICROPYTHON:
+if IN_C:
     out = bytearray(64 * 64)
     # Every name the locked loop sets exists first: a new global grows the
     # module's dict, which would allocate.
@@ -142,12 +143,14 @@ if ON_MICROPYTHON:
     check(locked is None, "render() into a buffer allocates nothing (heap locked)")
     check(0 < font.scratch_peak <= 8192, "scratch_peak after a 48 px icon: %d bytes" % font.scratch_peak)
 
-if ON_MICROPYTHON:
-    # The settings icon needs about 6.5 KB at 20 px and 21 KB at 1000 px.
-    err = raises(MemoryError, font.render, cp, 1000)
+if IN_C:
+    # The settings icon needs about 6.5 KB of scratch at 20 px and 11.5 KB at
+    # 256 px, whose 40 KB mask fits any heap (CircuitPython's unix build splits
+    # its heap into 512 KB pieces, too small for a 1000 px mask).
+    err = raises(MemoryError, font.render, cp, 256)
     check(err is not None and "scratch" in err, "too little scratch raises MemoryError: %r" % (err,))
     check(font.render(cp, 20) == alone, "the same Font draws correctly after the error")
-    check(len(ttfio.Font(DATA, scratch=32768).render(cp, 1000)) > 0, "Font(scratch=32768) draws it at 1000 px")
+    check(len(ttfio.Font(DATA, scratch=16384).render(cp, 256)) > 0, "Font(scratch=16384) draws it at 256 px")
 
 check(raises(ValueError, ttfio.Font, b"not a font at all") is not None, "Font(junk) raises ValueError")
 check(raises(ValueError, ttfio.Font, DATA, scratch=16) is not None, "Font(scratch=16) raises ValueError")

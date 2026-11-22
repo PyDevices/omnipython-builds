@@ -31,7 +31,7 @@ tracked here or linked from a sibling checkout or cloned at the commit in
 |---|---|
 | `audiodsp`, `pygraphics`, `ulab` | Cloned at the commit in `DEPENDENCIES.lock` when `modules/<name>` is missing, or linked from a sibling checkout. |
 | `lvgl` | [omnipython-lvgl](https://github.com/PyDevices/omnipython-lvgl), fetched at the commit in `DEPENDENCIES.lock` into `modules/.omnipython-lvgl`, or linked from a sibling checkout. A build compiles its `ports/micropython` or `ports/circuitpython`, whichever the interpreter is, and `all` includes it. |
-| `omnipython`, `palettes`, `pdwidgets`, `iconkit`, `audioinstruments`, `audioeffects` | Manifests here that require the Python packages from omnipython-lib. `audiocomponents` is the old name for the last two together and still builds both. `omnipython` also freezes `midiports` (MIDI over UART, USB and Bluetooth LE) when the build's `--flash` is 8 MB or more; a smaller image leaves it out, and the board installs it with `omip`. |
+| `omnipython`, `palettes`, `pdwidgets`, `iconkit`, `icons`, `audioinstruments`, `audioeffects` | Manifests here that require the Python packages from omnipython-lib. `audiocomponents` is the old name for the last two together and still builds both. `omnipython` also freezes `midiports` (MIDI over UART, USB and Bluetooth LE) when the build's `--flash` is 8 MB or more; a smaller image leaves it out, and the board installs it with `omip`. |
 | `micropython-lib` | MicroPython's own upstream packages, frozen from the checkout the MicroPython tree carries. |
 | `tflite`, `vision` | [esp-vision's modules](../guides/use-esp-vision-modules.md), opt-in: `all` leaves them out. |
 
@@ -54,7 +54,7 @@ it is. "Unix" is CircuitPython's unix port, built and imported in
 | pngio | yes | all five | Decodes with CircuitPython's older uzlib. |
 | svgio | yes | no | Not named in the board cells yet. |
 | tsmux | yes | all five | |
-| ttfio | no | no | Not built for CircuitPython yet. |
+| ttfio | yes | no | Checked by its own workflow, `ttfio.yml`, with the `icons` package frozen beside it. Not named in the board cells yet. It draws glyph masks; it is not a `fontio` font for displayio yet. |
 | ppa | yes (software) | ESP32-P4 | The hardware path on the P4. |
 | jpegio | yes | ESP32-P4 | Adds only the encoder's C API: CircuitPython has its own `jpegio` decoder. |
 | cameraif | yes (`available()` is False) | ESP32-P4 | |
