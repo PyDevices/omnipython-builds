@@ -91,10 +91,19 @@ and a 1 MiB file read back with a matching SHA-256 (2.2 MB/s write,
 to a computer meanwhile.
 
 On the same hub, an ESP32-P4X-EYE's full-speed USB device (a CDC port from
-a Python program, with nothing else running on that board) took 256 KB at
-154 KB/s and echoed data back at 58 KB/s. A device that NAKs between
-packets is asked again a microframe later while data is moving, and once a
-millisecond while it's idle, so the device's own pace sets the rate.
+a Python program, with nothing else running on that board) took 1 MB at
+168 KB/s and echoed data back at 72 to 76 KB/s each way. A device that
+NAKs between packets is asked again a microframe later while data is moving,
+and once a millisecond while it's idle, so the device's own pace sets the
+rate.
+
+The EYE also posed as a USB Audio 2.0 headset (48 kHz, 16-bit stereo,
+196-byte packets each way) on that hub, with the PNY drive reading
+continuously beside it. For 60 seconds the P4 played a 1 kHz tone to it and
+recorded the 750 Hz tone it sent back, while the drive read about 510 MB at
+8.5 MB/s. Both tones arrived at the right pitch and level. In each of two
+runs, one or two of the 60,000 microphone packets came back as errors; with
+the headset alone, none did.
 
 A P4 firmware built on ESP-IDF's own host library refuses such a device, and
 the console shows `Connected device is FS, transaction translator (TT) is not
