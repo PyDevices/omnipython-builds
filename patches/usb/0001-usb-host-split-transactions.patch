@@ -49,6 +49,9 @@ time, as Linux does.
 A bulk or control complete split answered NYET is asked again in the next
 microframe, from the SOF interrupt, rather than at once: asking at once was
 only answered NYET again, and cost an interrupt each time.
+When the device then NAKs, a split with quick retries left starts again at
+once instead of waiting for another microframe, which would make each of
+those retries cost two.
 
 Isochronous splits run one packet per frame. An OUT packet goes to the
 translator as start splits of up to 188 bytes in consecutive microframes
@@ -421,7 +424,7 @@ index ed4b4ba..51da12c 100644
              handle_error(ext_hub_dev);
          }
 diff --git a/src/hcd_dwc.c b/src/hcd_dwc.c
-index 8dad6d8..0beee6d 100644
+index 8dad6d8..55acff0 100644
 --- a/src/hcd_dwc.c
 +++ b/src/hcd_dwc.c
 @@ -143,6 +143,13 @@ DEFINE_CRIT_SECTION_LOCK_STATIC(hcd_lock);
@@ -513,7 +516,7 @@ index 8dad6d8..0beee6d 100644
  };
  
  // With s_port_inited[] we can check if a port has been initialized -> to provide singleton handle for each root port
-@@ -909,6 +970,770 @@ static usb_speed_t get_usb_port_speed(usb_dwc_speed_t priv)
+@@ -909,6 +970,780 @@ static usb_speed_t get_usb_port_speed(usb_dwc_speed_t priv)
      }
  }
  
@@ -1185,7 +1188,10 @@ index 8dad6d8..0beee6d 100644
 +        }
 +        if (hcint & USB_DWC_LL_INTR_CHAN_NYET) {
 +            // Not yet: the full-speed transaction is still on its way
-+            if (periodic && ++bd->nyets > BD_MAX_CSPLIT_NYETS) {
++            if (bd->nyets < UINT8_MAX) {
++                bd->nyets++;
++            }
++            if (periodic && bd->nyets > BD_MAX_CSPLIT_NYETS) {
 +                bd->csplit = 0;
 +                bd->nyets = 0;
 +                return bd_go_on(pipe, false);
@@ -1196,9 +1202,16 @@ index 8dad6d8..0beee6d 100644
 +        }
 +        if ((hcint & USB_DWC_LL_INTR_CHAN_NAK) && !(hcint & USB_DWC_LL_INTR_CHAN_XFERCOMPL)) {
 +            // The device NAKed: start over in the next frame (bd_sof() says when), or the next interval for a
-+            // periodic endpoint
++            // periodic endpoint. A bulk or control complete split answered NYET first waited for a start of
++            // microframe, so the try that just ended began a microframe ago: while quick retries are left, the start
++            // split goes again now. Waiting for another microframe would make each retry cost two.
++            const bool waited = bd->nyets > 0;
 +            bd->csplit = 0;
 +            bd->nyets = 0;
++            if (!periodic && waited && bd->quick_naks) {
++                bd->quick_naks--;
++                return bd_go_on(pipe, true);
++            }
 +            return bd_go_on(pipe, false);
 +        }
 +        if (hcint & (USB_DWC_LL_INTR_CHAN_XFERCOMPL | USB_DWC_LL_INTR_CHAN_ACK)) {
@@ -1284,7 +1297,7 @@ index 8dad6d8..0beee6d 100644
  // ----------------- Interrupt Handlers --------------------
  
  /**
-@@ -935,7 +1760,15 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+@@ -935,7 +1770,15 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
          break;
      }
      case USB_DWC_HAL_PORT_EVENT_ENABLED: {
@@ -1301,7 +1314,7 @@ index 8dad6d8..0beee6d 100644
          port->speed = get_usb_port_speed(usb_dwc_hal_port_get_conn_speed(port->hal));
          port->state = HCD_PORT_STATE_ENABLED;
          port->flags.conn_dev_ena = 1;
-@@ -997,9 +1830,8 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
+@@ -997,9 +1840,8 @@ static hcd_port_event_t _intr_hdlr_hprt(port_t *port, usb_dwc_hal_port_event_t h
   * @param[out] yield Set to true if a yield is required as a result of handling the interrupt
   * @return hcd_pipe_event_t The pipe event
   */
@@ -1312,7 +1325,7 @@ index 8dad6d8..0beee6d 100644
      hcd_pipe_event_t event = HCD_PIPE_EVENT_NONE;
  
      switch (chan_event) {
-@@ -1011,10 +1843,17 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1011,10 +1853,17 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          pipe->last_event = HCD_PIPE_EVENT_URB_DONE;
          event = pipe->last_event;
          // Mark the buffer as done
@@ -1332,7 +1345,7 @@ index 8dad6d8..0beee6d 100644
              // If the next buffer is filled and ready to execute, execute it
              _buffer_exec(pipe);
          }
-@@ -1025,6 +1864,10 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1025,6 +1874,10 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
              // Now that we've parsed a buffer, see if another URB can be filled in its place
              _buffer_fill(pipe);
          }
@@ -1343,7 +1356,7 @@ index 8dad6d8..0beee6d 100644
          break;
      }
      case USB_DWC_HAL_CHAN_EVENT_ERROR: {
-@@ -1043,7 +1886,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1043,7 +1896,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          event = pipe->last_event;
          pipe->state = HCD_PIPE_STATE_HALTED;
          // Mark the buffer as done with an error
@@ -1352,7 +1365,7 @@ index 8dad6d8..0beee6d 100644
          _buffer_done(pipe, stop_idx, pipe->last_event, false);
          // Parse the buffer
          _buffer_parse(pipe);
-@@ -1056,7 +1899,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1056,7 +1909,7 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
          event = pipe->last_event;
          // Halt request event is triggered when packet is successful completed. But just treat all halted transfers as errors
          pipe->state = HCD_PIPE_STATE_HALTED;
@@ -1361,7 +1374,7 @@ index 8dad6d8..0beee6d 100644
          _buffer_done(pipe, stop_idx, HCD_PIPE_EVENT_NONE, true);
          // Parse the buffer
          _buffer_parse(pipe);
-@@ -1074,6 +1917,108 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
+@@ -1074,6 +1927,108 @@ static hcd_pipe_event_t _intr_hdlr_chan(pipe_t *pipe, usb_dwc_hal_chan_t *chan_o
      return event;
  }
  
@@ -1470,7 +1483,7 @@ index 8dad6d8..0beee6d 100644
  /**
   * @brief Main interrupt handler
   *
-@@ -1091,6 +2036,13 @@ static void intr_hdlr_main(void *arg)
+@@ -1091,6 +2046,13 @@ static void intr_hdlr_main(void *arg)
      bool yield = false;
  
      HCD_ENTER_CRITICAL_ISR();
@@ -1484,7 +1497,7 @@ index 8dad6d8..0beee6d 100644
      usb_dwc_hal_port_event_t hal_port_evt = usb_dwc_hal_decode_intr(port->hal);
      if (hal_port_evt == USB_DWC_HAL_PORT_EVENT_CHAN) {
          // Channel event. Cycle through each pending channel
-@@ -1119,6 +2071,20 @@ static void intr_hdlr_main(void *arg)
+@@ -1119,6 +2081,20 @@ static void intr_hdlr_main(void *arg)
              }
          }
      }
@@ -1505,7 +1518,7 @@ index 8dad6d8..0beee6d 100644
      HCD_EXIT_CRITICAL_ISR();
  
      if (yield) {
-@@ -1254,11 +2220,41 @@ static bool _port_debounce(port_t *port)
+@@ -1254,11 +2230,41 @@ static bool _port_debounce(port_t *port)
      return is_connected;
  }
  
@@ -1548,7 +1561,7 @@ index 8dad6d8..0beee6d 100644
      }
      CACHE_SYNC_FRAME_LIST(port->frame_list);
  }
-@@ -1430,7 +2426,12 @@ static esp_err_t _port_cmd_reset(port_t *port)
+@@ -1430,7 +2436,12 @@ static esp_err_t _port_cmd_reset(port_t *port)
      usb_dwc_hal_set_fifo_config(port->hal, &port->fifo_config);// Apply FIFO settings
  
      usb_dwc_hal_port_set_frame_list(port->hal, port->frame_list, FRAME_LIST_LEN);   // Set periodic frame list
@@ -1562,7 +1575,7 @@ index 8dad6d8..0beee6d 100644
  
      ret = ESP_OK;
  bailout:
-@@ -1642,6 +2643,13 @@ esp_err_t hcd_port_init(int port_number, const hcd_port_config_t *port_config, h
+@@ -1642,6 +2653,13 @@ esp_err_t hcd_port_init(int port_number, const hcd_port_config_t *port_config, h
      usb_dwc_hal_init(port_obj->hal, port_number);
  #endif
      hal_inited = true;
@@ -1576,7 +1589,7 @@ index 8dad6d8..0beee6d 100644
      port_obj->hal->channels.hdls = calloc(port_obj->hal->constant_config.chan_num_total, sizeof(usb_dwc_hal_chan_t *));
      if (port_obj->hal->channels.hdls == NULL) {
          err_ret = ESP_ERR_NO_MEM;
-@@ -1776,6 +2784,26 @@ esp_err_t hcd_port_get_speed(hcd_port_handle_t port_hdl, usb_speed_t *speed)
+@@ -1776,6 +2794,26 @@ esp_err_t hcd_port_get_speed(hcd_port_handle_t port_hdl, usb_speed_t *speed)
      return ESP_OK;
  }
  
@@ -1603,7 +1616,7 @@ index 8dad6d8..0beee6d 100644
  hcd_port_event_t hcd_port_handle_event(hcd_port_handle_t port_hdl)
  {
      port_t *port = (port_t *)port_hdl;
-@@ -2058,15 +3086,16 @@ static esp_err_t _pipe_cmd_halt(pipe_t *pipe)
+@@ -2058,15 +3096,16 @@ static esp_err_t _pipe_cmd_halt(pipe_t *pipe)
      }
      // If the pipe's port is invalid, we just mark the pipe as halted without needing to halt the underlying channel
      if (pipe->port->flags.conn_dev_ena // Skip halting the underlying channel if the port is invalid
@@ -1622,7 +1635,7 @@ index 8dad6d8..0beee6d 100644
          pipe->state = HCD_PIPE_STATE_HALTED;
      }
      ret = ESP_OK;
-@@ -2169,6 +3198,63 @@ exit:
+@@ -2169,6 +3208,63 @@ exit:
  
  // ----------------------- Public --------------------------
  
@@ -1686,7 +1699,7 @@ index 8dad6d8..0beee6d 100644
  esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pipe_config, hcd_pipe_handle_t *pipe_hdl)
  {
      HCD_CHECK(port_hdl != NULL && pipe_config != NULL && pipe_hdl != NULL, ESP_ERR_INVALID_ARG);
-@@ -2229,6 +3315,32 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2229,6 +3325,32 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
      pipe_set_ep_char(pipe_config, type, is_default, pipe_idx, port_speed, &ep_char);
      memcpy(&pipe->ep_char, &ep_char, sizeof(usb_dwc_hal_ep_char_t));
      pipe->state = HCD_PIPE_STATE_ACTIVE;
@@ -1719,7 +1732,7 @@ index 8dad6d8..0beee6d 100644
      pipe->callback = pipe_config->callback;
      pipe->callback_arg = pipe_config->callback_arg;
      pipe->context = pipe_config->context;
-@@ -2240,6 +3352,62 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2240,6 +3362,62 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
          ret = ESP_ERR_INVALID_STATE;
          goto err;
      }
@@ -1782,7 +1795,7 @@ index 8dad6d8..0beee6d 100644
      bool chan_allocated = usb_dwc_hal_chan_alloc(port->hal, pipe->chan_obj, (void *) pipe);
      if (!chan_allocated) {
          HCD_EXIT_CRITICAL();
-@@ -2248,7 +3416,7 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
+@@ -2248,7 +3426,7 @@ esp_err_t hcd_pipe_alloc(hcd_port_handle_t port_hdl, const hcd_pipe_config_t *pi
          ret = ESP_ERR_NOT_SUPPORTED;
          goto err;
      }
@@ -1791,7 +1804,7 @@ index 8dad6d8..0beee6d 100644
      CACHE_SYNC_FRAME_LIST(port->frame_list);
      // Add the pipe to the list of idle pipes in the port object
      TAILQ_INSERT_TAIL(&port->pipes_idle_tailq, pipe, tailq_entry);
-@@ -2263,7 +3431,12 @@ err:
+@@ -2263,7 +3441,12 @@ err:
          buffer_block_free(buffers[i]);
      }
      free(chan_obj);
@@ -1805,7 +1818,7 @@ index 8dad6d8..0beee6d 100644
      return ret;
  }
  
-@@ -2306,6 +3479,11 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
+@@ -2306,6 +3489,11 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
      // Remove pipe from the list of idle pipes (it must be in the idle list because it should have no queued URBs)
      TAILQ_REMOVE(&pipe->port->pipes_idle_tailq, pipe, tailq_entry);
      pipe->port->num_pipes_idle--;
@@ -1817,7 +1830,7 @@ index 8dad6d8..0beee6d 100644
      usb_dwc_hal_chan_free(pipe->port->hal, pipe->chan_obj);
      HCD_EXIT_CRITICAL();
  
-@@ -2314,6 +3492,9 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
+@@ -2314,6 +3502,9 @@ esp_err_t hcd_pipe_free(hcd_pipe_handle_t pipe_hdl)
          buffer_block_free(pipe->buffers[i]);
      }
      free(pipe->chan_obj);
@@ -1827,7 +1840,7 @@ index 8dad6d8..0beee6d 100644
      free(pipe);
      return ESP_OK;
  }
-@@ -2328,7 +3509,7 @@ esp_err_t hcd_pipe_update_mps(hcd_pipe_handle_t pipe_hdl, int mps)
+@@ -2328,7 +3519,7 @@ esp_err_t hcd_pipe_update_mps(hcd_pipe_handle_t pipe_hdl, int mps)
                          ESP_ERR_INVALID_STATE);
      pipe->ep_char.mps = mps;
      // Update the underlying channel's registers
@@ -1836,7 +1849,7 @@ index 8dad6d8..0beee6d 100644
      HCD_EXIT_CRITICAL();
      return ESP_OK;
  }
-@@ -2343,7 +3524,7 @@ esp_err_t hcd_pipe_update_dev_addr(hcd_pipe_handle_t pipe_hdl, uint8_t dev_addr)
+@@ -2343,7 +3534,7 @@ esp_err_t hcd_pipe_update_dev_addr(hcd_pipe_handle_t pipe_hdl, uint8_t dev_addr)
                          ESP_ERR_INVALID_STATE);
      pipe->ep_char.dev_addr = dev_addr;
      // Update the underlying channel's registers
@@ -1845,7 +1858,7 @@ index 8dad6d8..0beee6d 100644
      HCD_EXIT_CRITICAL();
      return ESP_OK;
  }
-@@ -2659,7 +3840,7 @@ static void IRAM_ATTR _buffer_exec(pipe_t *pipe)
+@@ -2659,7 +3850,7 @@ static void IRAM_ATTR _buffer_exec(pipe_t *pipe)
      // Update buffer and multi buffer flags
      buffer_to_exec->status_flags.executing = 1;
      pipe->multi_buffer_control.buffer_is_executing = 1;
@@ -1854,7 +1867,7 @@ index 8dad6d8..0beee6d 100644
  }
  
  static void _buffer_exec_cont(pipe_t *pipe)
-@@ -2690,7 +3871,7 @@ static void _buffer_exec_cont(pipe_t *pipe)
+@@ -2690,7 +3881,7 @@ static void _buffer_exec_cont(pipe_t *pipe)
      // Continue the control transfer
      usb_dwc_hal_chan_set_dir(pipe->chan_obj, next_dir_is_in);
      usb_dwc_hal_chan_set_pid(pipe->chan_obj, next_pid);
