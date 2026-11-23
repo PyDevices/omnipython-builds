@@ -19,6 +19,21 @@ Output lands in `builds/circuitpython/<port>/<board or variant>/`, with the
 same build record. The unix port builds CircuitPython's default variant,
 `coverage`, unless you name another.
 
+## circuitpython.exe for Windows
+
+CircuitPython has no Windows interpreter of its own, so the build adds a
+`windows` port: the unix port's interpreter and its `coverage` variant's
+modules, cross-built with MinGW from Linux or WSL:
+
+```bash
+sudo apt-get install gcc-mingw-w64-x86-64 autoconf automake libtool libltdl-dev
+./build.py --interpreter circuitpython --port windows --modules pygraphics,audiodsp
+```
+
+It writes `builds/circuitpython/windows/coverage/circuitpython.exe`. It has
+`ffi` and `uctypes` for calling Windows DLLs, and no threads, `termios` or
+`select.poll` on files.
+
 It takes C modules only. [The modules table](../reference/modules.md) says
 which build on CircuitPython and why a module is left out.
 
