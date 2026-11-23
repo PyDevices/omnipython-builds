@@ -16,6 +16,8 @@ counts a small int's bits as long long, not long, which is 32 bits on
 64-bit Windows while a small int is 64. An enum value prints its
 names as qstrs, so the 64-bit Windows ABI doesn't leave half of one unset.
 The port keeps MicroPython's uctypes, which CircuitPython leaves out, for ffi.
+tests/run-tests.py gives CPython the SystemRoot and UTF-8 output it needs
+on a Windows host to write the expected output.
 ---
 diff --git a/lib/tjpgd/src/tjpgd.h b/lib/tjpgd/src/tjpgd.h
 index 4983ac7..47bd8f2 100644
@@ -2753,3 +2755,19 @@ index e8f7f51..23335f1 100644
          return mp_obj_new_int_from_uint(value);
      }
  
+diff --git a/tests/run-tests.py b/tests/run-tests.py
+index dc4a9d2..d6217b3 100755
+--- a/tests/run-tests.py
++++ b/tests/run-tests.py
+@@ -1099,7 +1099,11 @@ def run_tests(pyb, tests, args, result_dir, num_threads=1):
+                     "PYTHONPATH": base_path("testlib"),
+                     "PATH": os.environ["PATH"],
+                     "LANG": "en_US.UTF-8",
++                    "PYTHONIOENCODING": "utf-8",
+                 }
++                # CPython on Windows needs SystemRoot to load Winsock (asyncio).
++                if os.getenv("SYSTEMROOT"):
++                    e["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+                 # CIRCUITPY-CHANGE: --keep-path applies to PYTHONPATH as well
+                 if args.keep_path and os.getenv("PYTHONPATH"):
+                     e["PYTHONPATH"] += ":" + os.getenv("PYTHONPATH")
