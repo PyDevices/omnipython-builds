@@ -1,0 +1,30 @@
+# openthread on the ESP32-S31: the chip's own 802.15.4 radio under ESP-IDF's
+# OpenThread, as a full Thread device, so a board can lead a network or route
+# for others.
+CONFIG_IEEE802154_ENABLED=y
+CONFIG_OPENTHREAD_ENABLED=y
+CONFIG_OPENTHREAD_FTD=y
+CONFIG_OPENTHREAD_RADIO_NATIVE=y
+
+# No lwIP interface: the module sends UDP through OpenThread's own sockets,
+# so Thread never takes the default route, addresses or DNS from Wi-Fi or
+# Ethernet.
+CONFIG_OPENTHREAD_PLATFORM_NETIF=n
+CONFIG_OPENTHREAD_DNS64_CLIENT=n
+
+# Python drives the stack; there's no OpenThread console on the REPL's port.
+CONFIG_OPENTHREAD_CLI=n
+CONFIG_OPENTHREAD_CONSOLE_ENABLE=n
+CONFIG_OPENTHREAD_SRP_CLIENT=n
+CONFIG_OPENTHREAD_DIAG=n
+CONFIG_OPENTHREAD_BORDER_ROUTER=n
+
+# The stack's heap and message buffers go to PSRAM, leaving internal RAM to
+# Wi-Fi, Bluetooth and the audio pump.
+CONFIG_OPENTHREAD_PLATFORM_MALLOC_CAP_SPIRAM=y
+CONFIG_OPENTHREAD_PLATFORM_MSGPOOL_MANAGEMENT=y
+CONFIG_OPENTHREAD_TASK_SIZE=8192
+
+# Errors and warnings only, at a fixed level.
+CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC=n
+CONFIG_OPENTHREAD_LOG_LEVEL_WARN=y

@@ -27,6 +27,7 @@
 !/modules/ppa/
 !/modules/jpegio/
 !/modules/mdns/
+!/modules/openthread/
 !/modules/offheap/
 !/modules/pngio/
 !/modules/svgio/

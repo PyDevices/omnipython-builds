@@ -17,6 +17,7 @@ tracked here or linked from a sibling checkout or cloned at the commit in
 | [`jpegio`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/jpegio) | JPEG decode and encode, with CircuitPython's `jpegio` API. |
 | [`mdns`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/mdns) | Find and advertise services on the local network, with CircuitPython's `mdns` API (esp32, rp2, unix, windows). |
 | [`offheap`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/offheap) | Byte buffers outside the garbage-collected heap, so big pixel buffers don't slow every collection (esp32, unix, windows, webassembly). |
+| [`openthread`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/openthread) | A Thread network node on the ESP32-S31's own 802.15.4 radio: form or join a network, read the node's role, and send UDP between nodes. Opt-in. |
 | [`picotts`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/picotts) | Text to speech on the SVOX Pico engine, with the API of Adafruit's `adafruit_picotts`. Opt-in, and it needs PSRAM. |
 | [`pngio`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/pngio) | PNG encode and decode, RGB565 in and out. |
 | [`ppa`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/ppa) | Scale, rotate, convert and fill pixel buffers, on the ESP32-P4's Pixel Processing Accelerator or in portable C elsewhere. |
@@ -36,7 +37,7 @@ tracked here or linked from a sibling checkout or cloned at the commit in
 | `tflite`, `vision` | [esp-vision's modules](../guides/use-esp-vision-modules.md), opt-in: `all` leaves them out. |
 
 [`modules/all`](https://github.com/PyDevices/omnipython-builds/tree/main/modules/all) is not a module but the rule behind `all`: every module beside it
-except those with an `OPT_IN` file: `btclassic`, `pdwidgets`, `picotts`, `tflite` and `vision`.
+except those with an `OPT_IN` file: `btclassic`, `openthread`, `pdwidgets`, `picotts`, `tflite` and `vision`.
 
 ## Which modules build on CircuitPython
 
