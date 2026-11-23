@@ -103,3 +103,7 @@ jobs:
           MICROPY_MICROPYTHON=../out/circuitpython.exe python run-tests.py \
             -d basics float micropython circuitpython import io misc unicode extmod \
             -e math_fun -e issue9705 -e attrtuple2
+
+      - name: What the failed tests printed
+        if: failure()
+        run: cd tests && python run-tests.py --print-failures
