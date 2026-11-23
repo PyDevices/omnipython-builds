@@ -94,9 +94,9 @@ jobs:
       # Left out: math_fun (MinGW's libm, as for micropython.exe), issue9705
       # (select.poll on a file) and attrtuple2 (CPython on Windows has no
       # os.uname, so its expected output is a skip), and
-      # uctypes_array_load_store (its expected output predates the newer
-      # MicroPython uctypes this port carries, which stores what it can't fit
-      # instead of raising OverflowError).
+      # uctypes_array_load_store (CircuitPython has no uctypes, and its
+      # expected output wants an OverflowError that the MicroPython uctypes
+      # this port carries doesn't raise for a negative unsigned store).
       - name: CircuitPython's own tests
         env:
           PYTHONUTF8: '1'
