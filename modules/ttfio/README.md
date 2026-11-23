@@ -19,7 +19,8 @@ for row in range(h):
 
 It is built for icon fonts such as Material Symbols, where one 20 KB font
 holds every icon at every size, and works for any TrueType font. The same code
-runs on every MicroPython port (`--modules all` has it). On CPython, `ttfio.py`
+runs on every MicroPython port (`--modules all` has it) and in CircuitPython-compatible
+firmware (`--interpreter circuitpython --modules ttfio`). On CPython, `ttfio.py`
 in omnipython-desktop gives the same API over FreeType.
 
 [`examples/ttfio_simpletest.py`](examples/ttfio_simpletest.py) draws an icon and prints it as text, then draws it again into a buffer of its own.
