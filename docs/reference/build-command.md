@@ -16,7 +16,7 @@ optional. Leave out `--modules` and it lists [`modules/`](https://github.com/PyD
 | Option | Meaning |
 |---|---|
 | `--interpreter` | `micropython` (the default) or `circuitpython`: CircuitPython-compatible firmware from CircuitPython's own ports and boards. |
-| `--port` | The port: `unix`, `windows`, `webassembly`, `esp32`, `rp2`. With `--interpreter circuitpython`, CircuitPython's own: `espressif`, `raspberrypi`, `unix` and the rest. |
+| `--port` | The port: `unix`, `windows`, `webassembly`, `esp32`, `rp2`. With `--interpreter circuitpython`, CircuitPython's own: `espressif`, `raspberrypi`, `unix` and the rest, plus `windows`, which builds `circuitpython.exe`. |
 | `--board` | The board, by upstream's directory name. |
 | `--variant` | A variant of the board or port: upstream's, or one of ours in [`variants/`](https://github.com/PyDevices/omnipython-builds/tree/main/variants). |
 | `--modules` | A comma list of short names, full paths, or `all`. See [Modules](modules.md). |
@@ -51,7 +51,7 @@ the last directory is:
 |---|---|
 | esp32, rp2 | `default` |
 | unix, windows, webassembly | `standard`, upstream's default variant |
-| CircuitPython unix | `coverage`, CircuitPython's default variant |
+| CircuitPython unix, windows | `coverage`, CircuitPython's default variant |
 
 Each build folder holds `omnipython-build.json`, a record of every module's
 commit, and the files the build made: `firmware.bin` on esp32, `firmware.uf2`

@@ -1,0 +1,105 @@
+# circuitpython.exe: CircuitPython's unix port built for Windows
+# (patches/circuitpython/0012), beside windows-native's micropython.exe. It is
+# cross-built with MinGW on Linux, where CircuitPython's build tools run, and
+# then run on a Windows runner: CircuitPython's own basics tests, our C
+# modules' imports, an audiodsp render and an ffi call into a Windows DLL.
+name: circuitpython-windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build_mp.py'
+      - 'DEPENDENCIES.lock'
+      - 'patches/circuitpython/**'
+      - '.github/workflows/circuitpython-windows.yml'
+  pull_request:
+    paths:
+      - 'build_mp.py'
+      - 'DEPENDENCIES.lock'
+      - 'patches/circuitpython/**'
+      - '.github/workflows/circuitpython-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install MinGW and what libffi's configure needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 autoconf automake libtool libltdl-dev
+
+      - name: Build circuitpython.exe with pygraphics and audiodsp
+        run: python3 build_mp.py --interpreter circuitpython --port windows --modules pygraphics,audiodsp
+
+      # The exe, audiodsp's mixer check and CircuitPython's tests, for the
+      # Windows job to run.
+      - name: Keep the build and CircuitPython's tests
+        run: |
+          mkdir -p out
+          cp builds/circuitpython/windows/coverage/circuitpython.exe out/
+          cp modules/audiodsp/tests/circuitpython/ring_through_mixer.py out/
+          tar -C deps/circuitpython -cf out/cptests.tar tests tools/pyboard.py \
+            lib/micropython-lib/python-stdlib/unittest \
+            frozen/Adafruit_CircuitPython_asyncio frozen/Adafruit_CircuitPython_Ticks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: circuitpython-windows
+          path: out/
+
+  run:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: circuitpython-windows
+          path: out
+
+      - name: It starts, and says what it is
+        run: |
+          ./out/circuitpython.exe -c "import sys; print(sys.implementation, sys.platform)"
+          ./out/circuitpython.exe -c "import sys; assert sys.implementation.name == 'circuitpython' and sys.platform == 'win32'"
+
+      - name: CircuitPython's modules and ours import; ffi calls into kernel32
+        run: |
+          cat > smoke.py <<'PY'
+          import synthio, audiocore, audiomixer, audiodelays, audiofilters, ulab, jpegio, zlib, uctypes
+          import pygraphics, audiograph
+          from audiopump import Ring
+          import ffi
+          k32 = ffi.open("kernel32.dll")
+          tick = k32.func("L", "GetTickCount", "")
+          print("GetTickCount", tick())
+          assert tick() > 0
+          print("smoke ok")
+          PY
+          ./out/circuitpython.exe smoke.py
+
+      - name: audiopump.Ring through audiomixer, sample by sample
+        run: timeout 300 ./out/circuitpython.exe out/ring_through_mixer.py
+
+      # Left out: math_fun (MinGW's libm, as for micropython.exe), issue9705
+      # (select.poll on a file) and attrtuple2 (CPython on Windows has no
+      # os.uname, so its expected output is a skip).
+      - name: CircuitPython's own tests
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          tar -xf out/cptests.tar
+          cd tests
+          MICROPY_MICROPYTHON=../out/circuitpython.exe python run-tests.py \
+            -d basics float micropython circuitpython import io misc unicode extmod \
+            -e math_fun -e issue9705 -e attrtuple2

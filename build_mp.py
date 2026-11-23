@@ -2104,14 +2104,19 @@ CP_UNIX_CFLAGS = "-DMICROPY_QSTR_OFFSET_BYTES=4"
 def cp_make_args(port, make_extra):
     """make's arguments with what a CircuitPython port needs from us added.
     A CFLAGS_EXTRA of the caller's is kept, with ours appended to it."""
-    if port != "unix":
+    if port not in ("unix", "windows"):
         return list(make_extra)
     out, found = [], False
     for a in make_extra:
         if a.startswith("CFLAGS_EXTRA="):
             a, found = f"{a} {CP_UNIX_CFLAGS}", True
         out.append(a)
-    return out if found else out + [f"CFLAGS_EXTRA={CP_UNIX_CFLAGS}"]
+    if not found:
+        out.append(f"CFLAGS_EXTRA={CP_UNIX_CFLAGS}")
+    if port == "windows":
+        # The windows port (patches/circuitpython/0012) is cross-built with MinGW.
+        out.append("CROSS_COMPILE=x86_64-w64-mingw32-")
+    return out
 
 
 def circuitpython_version(cp, patches):
@@ -2186,7 +2191,7 @@ def build_circuitpython(args, make_extra, ws):
                                for d in module_dirs if cp_frozen_manifest_dir(d)):
         library.build()
 
-    # The unix port's own default variant is coverage.
+    # The unix and windows ports' own default variant is coverage.
     build = OUT_DIR / "circuitpython" / port / (board or variant or "coverage")
     module_set = sorted([d.name if d.parent == MODULES_DIR else str(d) for d in module_dirs] + library_packages)
     components = []
@@ -2217,8 +2222,8 @@ def build_circuitpython(args, make_extra, ws):
     if version:
         # py/version.py takes this instead of asking git, whose answer carries -dirty for our patches.
         env["CP_VERSION"] = version
-    # The unix port is a desktop: omnipython freezes its host-only files there.
-    env["OMNIPYTHON_PLATFORM"] = "desktop" if port == "unix" else "board"
+    # The unix and windows ports are desktops: omnipython freezes its host-only files there.
+    env["OMNIPYTHON_PLATFORM"] = "desktop" if port in ("unix", "windows") else "board"
     env["PATH"] = os.pathsep.join([str(CP_VENV / "bin"), env.get("PATH", "")])
     env["VIRTUAL_ENV"] = str(CP_VENV)
     # Only the submodules this target needs, the way CircuitPython's CI does:
@@ -2282,7 +2287,7 @@ def build_circuitpython(args, make_extra, ws):
     rec["module_revisions"] = revisions
     rec_path.write_text(json.dumps(rec, indent=1) + "\n")
     say(f"\nBuilt into {build}")
-    for name in ("firmware.uf2", "firmware.bin", "firmware.elf", "micropython"):
+    for name in ("firmware.uf2", "firmware.bin", "firmware.elf", "micropython", "circuitpython.exe"):
         if (build / name).exists():
             say(f"  {build / name}")
 

@@ -1,0 +1,1991 @@
+From: PyDevices <noreply@pydevices.org>
+Subject: [PATCH] windows: the unix port, built for Windows
+
+CircuitPython has no windows port; its unix port is the desktop interpreter.
+This adds one the way MicroPython has it: ports/windows reuses the unix
+port's main.c, input.c and gccollect.c, with MicroPython's windows HAL
+(PyDevices' copy, with the _timing module, ffi and piped stdin), and the
+CircuitPython pieces the unix port's Makefile adds. Its default variant is
+the unix port's coverage variant, without gcov. It builds circuitpython.exe
+with MinGW-w64.
+
+ports/unix/modffi.c loads DLLs with LoadLibrary on Windows, and passes a
+callback's arguments by their declared types. lib/tjpgd takes MinGW's
+stdint.h instead of typedefs meant for old Visual C++. int.bit_length()
+counts a small int's bits as long long, not long, which is 32 bits on
+64-bit Windows while a small int is 64. An enum value prints its
+names as qstrs, so the 64-bit Windows ABI doesn't leave half of one unset.
+The port keeps uctypes on, for ffi.
+---
+diff --git a/lib/tjpgd/src/tjpgd.h b/lib/tjpgd/src/tjpgd.h
+index 4983ac7..47bd8f2 100644
+--- a/lib/tjpgd/src/tjpgd.h
++++ b/lib/tjpgd/src/tjpgd.h
+@@ -11,7 +11,7 @@ extern "C" {
+ #include "tjpgdcnf.h"
+ #include <string.h>
+ 
+-#if defined(_WIN32)	/* VC++ or some compiler without stdint.h */
++#if defined(_WIN32) && !defined(__MINGW32__)	/* CIRCUITPY-CHANGE: MinGW has stdint.h. VC++ or some compiler without stdint.h */
+ typedef unsigned char	uint8_t;
+ typedef unsigned short	uint16_t;
+ typedef short			int16_t;
+diff --git a/ports/unix/modffi.c b/ports/unix/modffi.c
+index c16d40a..c60c681 100644
+--- a/ports/unix/modffi.c
++++ b/ports/unix/modffi.c
+@@ -36,7 +36,11 @@
+ #include <assert.h>
+ #include <string.h>
+ #include <errno.h>
++#ifdef _WIN32
++#include <windows.h>
++#else
+ #include <dlfcn.h>
++#endif
+ #include <ffi.h>
+ 
+ /*
+@@ -212,6 +216,62 @@ static mp_obj_t return_ffi_value(ffi_union_t *val, char type) {
+ 
+ // FFI module
+ 
++#ifdef _WIN32
++static inline void *mp_ffi_open(const char *fname) {
++    if (fname == NULL || fname[0] == '\0') {
++        return (void *)GetModuleHandle(NULL);
++    }
++    return (void *)LoadLibraryA(fname);
++}
++static inline void *mp_ffi_sym(void *handle, const char *symname) {
++    return (void *)GetProcAddress((HMODULE)handle, symname);
++}
++static inline void mp_ffi_close(void *handle) {
++    FreeLibrary((HMODULE)handle);
++}
++#else
++static inline void *mp_ffi_open(const char *fname) {
++    return dlopen(fname, RTLD_NOW | RTLD_LOCAL);
++}
++static inline void *mp_ffi_sym(void *handle, const char *symname) {
++    return dlsym(handle, symname);
++}
++static inline void mp_ffi_close(void *handle) {
++    dlclose(handle);
++}
++#endif
++
++static mp_obj_t ffi_arg_to_obj(ffi_type *type, void *arg) {
++    switch (type->type) {
++        case FFI_TYPE_POINTER:
++            return mp_obj_new_int_from_ull((uintptr_t)*(void **)arg);
++        case FFI_TYPE_UINT8:
++            return mp_obj_new_int_from_uint(*(uint8_t *)arg);
++        case FFI_TYPE_SINT8:
++            return mp_obj_new_int(*(int8_t *)arg);
++        case FFI_TYPE_UINT16:
++            return mp_obj_new_int_from_uint(*(uint16_t *)arg);
++        case FFI_TYPE_SINT16:
++            return mp_obj_new_int(*(int16_t *)arg);
++        case FFI_TYPE_UINT32:
++            return mp_obj_new_int_from_uint(*(uint32_t *)arg);
++        case FFI_TYPE_SINT32:
++            return mp_obj_new_int(*(int32_t *)arg);
++        case FFI_TYPE_UINT64:
++            return mp_obj_new_int_from_ull(*(uint64_t *)arg);
++        case FFI_TYPE_SINT64:
++            return mp_obj_new_int_from_ll(*(int64_t *)arg);
++        #if MICROPY_PY_BUILTINS_FLOAT
++        case FFI_TYPE_FLOAT:
++            return mp_obj_new_float_from_f(*(float *)arg);
++        case FFI_TYPE_DOUBLE:
++            return mp_obj_new_float_from_d(*(double *)arg);
++        #endif
++        default:
++            return mp_obj_new_int(*(mp_int_t *)arg);
++    }
++}
++
+ static void ffimod_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+     (void)kind;
+     mp_obj_ffimod_t *self = MP_OBJ_TO_PTR(self_in);
+@@ -220,7 +280,7 @@ static void ffimod_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kin
+ 
+ static mp_obj_t ffimod_close(mp_obj_t self_in) {
+     mp_obj_ffimod_t *self = MP_OBJ_TO_PTR(self_in);
+-    dlclose(self->handle);
++    mp_ffi_close(self->handle);
+     return mp_const_none;
+ }
+ static MP_DEFINE_CONST_FUN_OBJ_1(ffimod_close_obj, ffimod_close);
+@@ -257,7 +317,7 @@ static mp_obj_t ffimod_func(size_t n_args, const mp_obj_t *args) {
+     mp_obj_ffimod_t *self = MP_OBJ_TO_PTR(args[0]);
+     const char *symname = mp_obj_str_get_str(args[2]);
+ 
+-    void *sym = dlsym(self->handle, symname);
++    void *sym = mp_ffi_sym(self->handle, symname);
+     if (sym == NULL) {
+         mp_raise_OSError(MP_ENOENT);
+     }
+@@ -277,7 +337,7 @@ static void call_py_func(ffi_cif *cif, void *ret, void **args, void *user_data)
+     mp_obj_t pyfunc = o->pyfunc;
+ 
+     for (uint i = 0; i < cif->nargs; i++) {
+-        pyargs[i] = mp_obj_new_int(*(mp_int_t *)args[i]);
++        pyargs[i] = ffi_arg_to_obj(o->params[i], args[i]);
+     }
+     mp_obj_t res = mp_call_function_n_kw(pyfunc, cif->nargs, 0, pyargs);
+ 
+@@ -299,7 +359,7 @@ static void call_py_func_with_lock(ffi_cif *cif, void *ret, void **args, void *u
+ 
+     if (nlr_push(&nlr) == 0) {
+         for (uint i = 0; i < cif->nargs; i++) {
+-            pyargs[i] = mp_obj_new_int(*(mp_int_t *)args[i]);
++            pyargs[i] = ffi_arg_to_obj(o->params[i], args[i]);
+         }
+         mp_obj_t res = mp_call_function_n_kw(pyfunc, cif->nargs, 0, pyargs);
+ 
+@@ -373,7 +433,7 @@ static mp_obj_t ffimod_var(mp_obj_t self_in, mp_obj_t vartype_in, mp_obj_t symna
+     const char *rettype = mp_obj_str_get_str(vartype_in);
+     const char *symname = mp_obj_str_get_str(symname_in);
+ 
+-    void *sym = dlsym(self->handle, symname);
++    void *sym = mp_ffi_sym(self->handle, symname);
+     if (sym == NULL) {
+         mp_raise_OSError(MP_ENOENT);
+     }
+@@ -389,7 +449,7 @@ static mp_obj_t ffimod_addr(mp_obj_t self_in, mp_obj_t symname_in) {
+     mp_obj_ffimod_t *self = MP_OBJ_TO_PTR(self_in);
+     const char *symname = mp_obj_str_get_str(symname_in);
+ 
+-    void *sym = dlsym(self->handle, symname);
++    void *sym = mp_ffi_sym(self->handle, symname);
+     if (sym == NULL) {
+         mp_raise_OSError(MP_ENOENT);
+     }
+@@ -405,10 +465,10 @@ static mp_obj_t ffimod_make_new(const mp_obj_type_t *type, size_t n_args, size_t
+     if (args[0] != mp_const_none) {
+         fname = mp_obj_str_get_str(args[0]);
+     }
+-    void *mod = dlopen(fname, RTLD_NOW | RTLD_LOCAL);
++    void *mod = mp_ffi_open(fname);
+ 
+     if (mod == NULL) {
+-        mp_raise_OSError(errno);
++        mp_raise_OSError(MP_ENOENT);
+     }
+     mp_obj_ffimod_t *o = mp_obj_malloc(mp_obj_ffimod_t, type);
+     o->handle = mod;
+diff --git a/ports/windows/Makefile b/ports/windows/Makefile
+new file mode 100644
+index 0000000..d7c3339
+--- /dev/null
++++ b/ports/windows/Makefile
+@@ -0,0 +1,208 @@
++# CIRCUITPY-CHANGE: CircuitPython's unix port, built for Windows with MinGW.
++# MicroPython's windows port, which reuses the unix port's main.c, input.c and
++# gccollect.c, with the CircuitPython pieces the unix port's Makefile adds.
++
++# Select the variant to build for:
++ifdef VARIANT_DIR
++# Custom variant path - remove trailing slash and get the final component of
++# the path as the variant name.
++VARIANT ?= $(notdir $(VARIANT_DIR:/=))
++else
++# CIRCUITPY-CHANGE: the unix port's default is coverage, and so is this one's.
++VARIANT ?= coverage
++VARIANT_DIR ?= variants/$(VARIANT)
++endif
++
++ifeq ($(wildcard $(VARIANT_DIR)/.),)
++$(error Invalid VARIANT specified: $(VARIANT_DIR))
++endif
++
++# If the build directory is not given, make it reflect the variant name.
++BUILD ?= build-$(VARIANT)
++
++include ../../py/mkenv.mk
++-include mpconfigport.mk
++include $(VARIANT_DIR)/mpconfigvariant.mk
++
++FROZEN_MANIFEST ?= variants/manifest.py
++
++# Define main target
++# CIRCUITPY-CHANGE: circuitpython.exe
++PROG ?= circuitpython
++
++# qstr definitions (must come before including py.mk)
++QSTR_DEFS += ../unix/qstrdefsport.h
++QSTR_GLOBAL_DEPENDENCIES += $(VARIANT_DIR)/mpconfigvariant.h
++
++# Enable building 32-bit code on 64-bit hosts.
++ifeq ($(MICROPY_FORCE_32BIT),1)
++CC += -m32
++CXX += -m32
++LD += -m32
++endif
++
++# include py core make definitions
++include $(TOP)/py/py.mk
++include $(TOP)/extmod/extmod.mk
++
++INC += -I.
++INC += -I$(TOP)
++INC += -I$(BUILD)
++INC += -I$(VARIANT_DIR)
++
++# compiler settings
++# CIRCUITPY-CHANGE: the unix port's warnings and gnu11, less -Wfloat-conversion,
++# which MinGW's isnan(), isinf() and signbit() macros trip on doubles
++CFLAGS += $(INC) -Wall -Werror -Wextra -Wno-unused-parameter -Wpointer-arith -Wdouble-promotion -Wno-missing-field-initializers -std=gnu11 -DUNIX -D__USE_MINGW_ANSI_STDIO=1 $(COPT) $(CFLAGS_EXTRA)
++LDFLAGS += -lm -lbcrypt -lwinmm $(LDFLAGS_EXTRA)
++
++# Force the use of 64-bits for file sizes in C library functions on 32-bit platforms.
++# This option has no effect on 64-bit builds.
++CFLAGS += -D_FILE_OFFSET_BITS=64
++
++# Force the use of 64-bits for time_t in C library functions on 32-bit platforms.
++# This option has no effect on 64-bit builds.
++CFLAGS += -D_TIME_BITS=64
++
++# Debugging/Optimization
++ifdef DEBUG
++CFLAGS += -g
++# CIRCUITPY-CHANGE: -Og, as the unix port (its coverage variant sets DEBUG)
++COPT = -Og
++else
++COPT = -Os #-DNDEBUG
++endif
++
++# CIRCUITPY-CHANGE: drop unused code, as the unix port does. The coverage
++# variant's C++ check (coveragecpp.cpp) names functions nothing defines, and
++# leaves them for the linker to drop.
++COPT += -fdata-sections -ffunction-sections
++LDFLAGS += -Wl,--gc-sections
++
++# CIRCUITPY-CHANGE: CircuitPython builds with these.
++CFLAGS += -DCIRCUITPY=1
++
++# source files
++SRC_C += \
++	shared/libc/printf.c \
++	shared/runtime/gchelper_generic.c \
++	ports/unix/main.c \
++	ports/unix/input.c \
++	ports/unix/gccollect.c \
++	windows_mphal.c \
++	mod_timing.c \
++	realpath.c \
++	init.c \
++	fmode.c \
++	$(wildcard $(VARIANT_DIR)/*.c)
++
++# CIRCUITPY-CHANGE: what the unix port compiles beside its own files.
++SRC_C += \
++	shared-module/os/__init__.c \
++	supervisor/shared/settings.c \
++	supervisor/stub/filesystem.c \
++	supervisor/stub/safe_mode.c \
++	supervisor/stub/stack.c \
++	supervisor/shared/translate/translate.c \
++	$(SRC_MOD)
++
++ifeq ($(MICROPY_VFS_FAT),1)
++SRC_C += ports/unix/fatfs_port.c
++endif
++
++SRC_EXTMOD_C += extmod/modtime.c
++
++$(BUILD)/supervisor/shared/translate/translate.o: $(HEADER_BUILD)/qstrdefs.generated.h $(HEADER_BUILD)/compressed_translations.generated.h
++
++SHARED_SRC_C += $(addprefix shared/,\
++	runtime/pyexec.c \
++	timeutils/timeutils.c \
++	$(SHARED_SRC_C_EXTRA) \
++	)
++
++ifeq ($(MICROPY_USE_READLINE),1)
++INC += -I$(TOP)/shared/readline
++CFLAGS += -DMICROPY_USE_READLINE=1
++SHARED_SRC_C += shared/readline/readline.c
++endif
++
++LIBS += -lws2_32
++
++ifeq ($(MICROPY_PY_FFI),1)
++GIT_SUBMODULES += lib/libffi
++DEPLIBS += libffi
++QSTR_GLOBAL_REQUIREMENTS += $(DEPLIBS)
++LIBFFI_CFLAGS := -I$(shell ls -1d $(BUILD)/lib/libffi/include 2>/dev/null || echo $(BUILD)/lib/libffi/include)
++ifeq ($(MICROPY_FORCE_32BIT),1)
++LIBFFI_LDFLAGS = $(BUILD)/lib/libffi/out/lib32/libffi.a
++else
++LIBFFI_LDFLAGS = $(BUILD)/lib/libffi/out/lib/libffi.a
++endif
++CFLAGS += $(LIBFFI_CFLAGS) -DMICROPY_PY_FFI=1
++LDFLAGS += $(LIBFFI_LDFLAGS)
++SRC_C += ports/unix/modffi.c
++endif
++
++OBJ = $(PY_O) $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
++OBJ += $(addprefix $(BUILD)/, $(SRC_CXX:.cpp=.o))
++OBJ += $(addprefix $(BUILD)/, $(SHARED_SRC_C:.c=.o))
++OBJ += $(addprefix $(BUILD)/, $(LIB_SRC_C:.c=.o))
++
++# List of sources for qstr extraction
++SRC_QSTR += $(SRC_C) $(SRC_CXX) $(SHARED_SRC_C)
++
++# CIRCUITPY-CHANGE: as the unix port
++ifneq ($(FROZEN_MANIFEST),)
++CFLAGS += -DMICROPY_QSTR_EXTRA_POOL=mp_qstr_frozen_const_pool
++CFLAGS += -DMICROPY_MODULE_FROZEN_MPY
++CFLAGS += -DMPZ_DIG_SIZE=16
++CFLAGS += -DMICROPY_MODULE_FROZEN_STR
++endif
++
++ifeq ($(shell $(CC) -dumpmachine),i686-w64-mingw32)
++# GCC disables the SSE instruction set by default on i366 targets and we have
++# to specify all three of these options to enable it.
++# https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html (see -mfpmath=unit section)
++# Enabling the SSE instruction set is necessary to get correct rounding of floating points.
++# https://lemire.me/blog/2020/06/26/gcc-not-nearest
++CFLAGS += -msse -mfpmath=sse -march=pentium4
++endif
++
++CXXFLAGS += $(filter-out -std=gnu11,$(CFLAGS))
++
++ifneq ($(CROSS_COMPILE),)
++CROSS_COMPILE_HOST = --host=$(patsubst %-,%,$(CROSS_COMPILE))
++else
++CROSS_COMPILE_HOST =
++endif
++
++include $(TOP)/py/mkrules.mk
++
++.PHONY: test
++
++deplibs: $(DEPLIBS)
++
++libffi: $(BUILD)/lib/libffi/include/ffi.h
++
++$(TOP)/lib/libffi/configure: $(TOP)/lib/libffi/autogen.sh
++	cd $(TOP)/lib/libffi && ./autogen.sh
++
++$(BUILD)/lib/libffi/include/ffi.h: $(TOP)/lib/libffi/configure
++	mkdir -p $(BUILD)/lib/libffi && cd $(BUILD)/lib/libffi && \
++	$(abspath $(TOP))/lib/libffi/configure $(CROSS_COMPILE_HOST) --prefix=$$PWD/out --disable-shared --disable-structs CC="$(CC)" CXX="$(CXX)" LD="$(LD)" CFLAGS="-Os -fomit-frame-pointer -fstrict-aliasing -ffast-math -fno-exceptions" && \
++	$(MAKE) install-exec-recursive && $(MAKE) -C include install-data-am
++
++# Note for recent gcc versions like 13.2:
++# - mingw64-x86_64 gcc builds will pass the math_domain_special test
++# - mingw64-ucrt64 gcc builds will pass all of the below tests
++RUN_TESTS_SKIP += -e math_fun -e float2int_double -e float_parse -e math_domain_special
++
++test: $(BUILD)/$(PROG) $(TOP)/tests/run-tests.py
++	$(eval DIRNAME=ports/$(notdir $(CURDIR)))
++	cd $(TOP)/tests && MICROPY_MICROPYTHON=../$(DIRNAME)/$(BUILD)/$(PROG) $(PYTHON) ./run-tests.py $(RUN_TESTS_SKIP)
++
++$(BUILD)/$(PROG): $(BUILD)/micropython.res
++
++$(BUILD)/%.res: %.rc
++	$(ECHO) "WINDRES $<"
++	$(Q)$(WINDRES) $< -O coff -o $@
+diff --git a/ports/windows/README.md b/ports/windows/README.md
+new file mode 100644
+index 0000000..d051e91
+--- /dev/null
++++ b/ports/windows/README.md
+@@ -0,0 +1,20 @@
++# CircuitPython's unix port, for Windows
++
++This builds `circuitpython.exe`: the unix port's interpreter, with its
++coverage variant's CircuitPython modules (`synthio`, `audiocore`,
++`audiomixer`, `ulab`, `jpegio` and the rest), as a native Windows program.
++It is MicroPython's windows port, which reuses the unix port's `main.c`,
++`input.c` and `gccollect.c`, with the CircuitPython pieces the unix port's
++Makefile adds.
++
++Build it from Linux with MinGW-w64:
++
++    sudo apt-get install gcc-mingw-w64-x86-64 autoconf automake libtool libltdl-dev
++    make -C ../../mpy-cross
++    make CROSS_COMPILE=x86_64-w64-mingw32-
++
++The program lands in `build-coverage/circuitpython.exe`. `ffi` is built from
++`lib/libffi`, and calls into Windows DLLs (`ffi.open("kernel32.dll")`).
++
++What the unix port has and this one doesn't: threads (`_thread`), `termios`,
++and the native code emitters.
+diff --git a/ports/windows/fmode.c b/ports/windows/fmode.c
+new file mode 100644
+index 0000000..128c951
+--- /dev/null
++++ b/ports/windows/fmode.c
+@@ -0,0 +1,49 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013-2016 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++#include "fmode.h"
++#include "py/mpconfig.h"
++#include <fcntl.h>
++#include <stdlib.h>
++
++// Workaround for setting file translation mode: we must distinguish toolsets
++// since mingw has no _set_fmode, and altering msvc's _fmode directly has no effect
++static int set_fmode_impl(int mode) {
++    #ifndef _MSC_VER
++    _fmode = mode;
++    return 0;
++    #else
++    return _set_fmode(mode);
++    #endif
++}
++
++void set_fmode_binary(void) {
++    set_fmode_impl(O_BINARY);
++}
++
++void set_fmode_text(void) {
++    set_fmode_impl(O_TEXT);
++}
+diff --git a/ports/windows/fmode.h b/ports/windows/fmode.h
+new file mode 100644
+index 0000000..c661c84
+--- /dev/null
++++ b/ports/windows/fmode.h
+@@ -0,0 +1,37 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013-2016 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#ifndef MICROPY_INCLUDED_WINDOWS_FMODE_H
++#define MICROPY_INCLUDED_WINDOWS_FMODE_H
++
++// Treat files opened by open() as binary. No line ending translation is done.
++void set_fmode_binary(void);
++
++// Treat files opened by open() as text.
++// When reading from the file \r\n will be converted to \n.
++// When writing to the file \n will be converted into \r\n.
++void set_fmode_text(void);
++
++#endif // MICROPY_INCLUDED_WINDOWS_FMODE_H
+diff --git a/ports/windows/init.c b/ports/windows/init.c
+new file mode 100644
+index 0000000..c6423f6
+--- /dev/null
++++ b/ports/windows/init.c
+@@ -0,0 +1,69 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013, 2014 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++#include "py/mpconfig.h"
++#include <stdlib.h>
++#include <stdio.h>
++#include <windows.h>
++#ifdef _MSC_VER
++#include <crtdbg.h>
++#endif
++#include "fmode.h"
++
++extern BOOL WINAPI console_sighandler(DWORD evt);
++
++#ifdef _MSC_VER
++void invalid_param_handler(const wchar_t *expr, const wchar_t *fun, const wchar_t *file, unsigned int line, uintptr_t p) {
++}
++#endif
++
++void init(void) {
++    #ifdef _MSC_VER
++    // Disable the 'Debug Error!' dialog for assertions failures and the likes,
++    // instead write messages to the debugger output and terminate.
++    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
++    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
++    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG);
++
++    // Disable 'invalid parameter handling' which is for instance invoked when
++    // passing invalid file descriptors to functions like lseek() and make the
++    // functions called behave properly by setting errno to EBADF/EINVAL/..
++    _set_invalid_parameter_handler(invalid_param_handler);
++    #endif
++    SetConsoleCtrlHandler(console_sighandler, TRUE);
++    #ifdef __MINGW32__
++    putenv("PRINTF_EXPONENT_DIGITS=2");
++    #elif _MSC_VER < 1900
++    // This is only necessary for Visual Studio versions 2013 and below:
++    // https://msdn.microsoft.com/en-us/library/bb531344(v=vs.140).aspx
++    _set_output_format(_TWO_DIGIT_EXPONENT);
++    #endif
++    set_fmode_binary();
++}
++
++void deinit(void) {
++    SetConsoleCtrlHandler(console_sighandler, FALSE);
++}
+diff --git a/ports/windows/init.h b/ports/windows/init.h
+new file mode 100644
+index 0000000..c6fddb2
+--- /dev/null
++++ b/ports/windows/init.h
+@@ -0,0 +1,32 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013, 2014 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#ifndef MICROPY_INCLUDED_WINDOWS_INIT_H
++#define MICROPY_INCLUDED_WINDOWS_INIT_H
++
++void init(void);
++void deinit(void);
++
++#endif // MICROPY_INCLUDED_WINDOWS_INIT_H
+diff --git a/ports/windows/micropython.rc b/ports/windows/micropython.rc
+new file mode 100644
+index 0000000..458cbad
+--- /dev/null
++++ b/ports/windows/micropython.rc
+@@ -0,0 +1,2 @@
++// CIRCUITPY-CHANGE: CircuitPython's icon
++app     ICON    "../../docs/static/favicon.ico"
+diff --git a/ports/windows/mod_timing.c b/ports/windows/mod_timing.c
+new file mode 100644
+index 0000000..3571189
+--- /dev/null
++++ b/ports/windows/mod_timing.c
+@@ -0,0 +1,199 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2026 Brad Barnett
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++// _timing: one OS timer that wakes the main thread, for a port with no
++// signals, no machine.Timer and no threads in the VM.
++//
++//     import _timing
++//     _timing.init(callback)   # a callable of one argument (None)
++//     _timing.arm(ms)          # one-shot: callback is scheduled in ms
++//     _timing.cancel()
++//
++// One waitable timer (high resolution where Windows 10 1803+ offers it, so
++// it is not bound to the 15.6 ms system tick) is waited on by a helper
++// thread that only sets a flag and signals an event when the deadline
++// passes. The main thread notices the flag in the VM's periodic hook, in
++// mp_event_wait_ms (so time.sleep_ms sees it) and in the console wait of
++// mp_hal_stdin_rx_chr, and hands the callback to mp_sched_schedule from its
++// own context. So the callback runs at a bytecode boundary of the main
++// thread, exactly as machine.Timer's soft callbacks do on a board, and no VM
++// state is ever touched from the helper thread. The event is what the
++// port's waits block on: a sleep or a REPL waiting for a key returns the
++// moment a deadline passes instead of at the end of a time slice.
++//
++// init() also asks Windows for its 1 ms timer resolution (timeBeginPeriod),
++// as SDL and pygame do: without it every wait in the process, time.sleep_ms
++// included, is rounded up to the 15.6 ms system tick.
++
++#include <windows.h>
++#include <mmsystem.h>
++
++#include "py/runtime.h"
++#include "py/mphal.h"
++
++#if MICROPY_PY_TIMING
++
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++
++static HANDLE timing_timer = NULL;
++static HANDLE timing_event = NULL;
++static HANDLE timing_thread = NULL;
++static volatile LONG timing_pending = 0;
++static bool timing_period_raised = false;
++
++static DWORD WINAPI timing_thread_main(LPVOID param) {
++    (void)param;
++    for (;;) {
++        if (WaitForSingleObject(timing_timer, INFINITE) != WAIT_OBJECT_0) {
++            return 0;
++        }
++        InterlockedExchange(&timing_pending, 1);
++        SetEvent(timing_event);
++    }
++}
++
++// Called from the main thread at safe points (see the header comment).
++void mp_timing_poll(void) {
++    if (!timing_pending) {
++        return;
++    }
++    mp_obj_t cb = MP_STATE_PORT(timing_callback);
++    if (InterlockedExchange(&timing_pending, 0) && cb != MP_OBJ_NULL) {
++        if (!mp_sched_schedule(cb, mp_const_none)) {
++            // The scheduler queue is full. Keep the deadline pending so the
++            // next poll retries; dropping it would leave nothing to re-arm
++            // the timer and every multimer timer would stop.
++            InterlockedExchange(&timing_pending, 1);
++        }
++    }
++}
++
++// Wait until the next deadline or timeout_ms, whichever comes first, with
++// the GIL released. Alertable, so APCs a library queues still run.
++void mp_timing_wfe(unsigned long timeout_ms) {
++    MP_THREAD_GIL_EXIT();
++    if (timing_event != NULL) {
++        WaitForSingleObjectEx(timing_event, timeout_ms, TRUE);
++    } else {
++        SleepEx(timeout_ms, TRUE);
++    }
++    MP_THREAD_GIL_ENTER();
++}
++
++// Wait for console input or the next deadline. True when input is ready (or
++// the wait could not be made, so the caller's blocking read runs as before).
++int mp_timing_wait_input(void *input, unsigned long timeout_ms) {
++    HANDLE hs[2] = { (HANDLE)input, timing_event };
++    DWORD n = timing_event != NULL ? 2 : 1;
++    MP_THREAD_GIL_EXIT();
++    DWORD r = WaitForMultipleObjectsEx(n, hs, FALSE, timeout_ms, TRUE);
++    MP_THREAD_GIL_ENTER();
++    return r == WAIT_OBJECT_0 || r == WAIT_FAILED;
++}
++
++static mp_obj_t timing_init(mp_obj_t callback) {
++    if (!mp_obj_is_callable(callback)) {
++        mp_raise_TypeError(MP_ERROR_TEXT("callback must be callable"));
++    }
++    if (timing_event == NULL) {
++        timing_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++        if (timing_event == NULL) {
++            mp_raise_OSError(GetLastError());
++        }
++    }
++    if (timing_timer == NULL) {
++        timing_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++        if (timing_timer == NULL) {
++            timing_timer = CreateWaitableTimerW(NULL, FALSE, NULL);
++        }
++        if (timing_timer == NULL) {
++            mp_raise_OSError(GetLastError());
++        }
++    }
++    if (timing_thread == NULL) {
++        timing_thread = CreateThread(NULL, 0, timing_thread_main, NULL, 0, NULL);
++        if (timing_thread == NULL) {
++            mp_raise_OSError(GetLastError());
++        }
++    }
++    if (!timing_period_raised) {
++        timeBeginPeriod(1);
++        timing_period_raised = true;
++    }
++    CancelWaitableTimer(timing_timer);
++    InterlockedExchange(&timing_pending, 0);
++    MP_STATE_PORT(timing_callback) = callback;
++    return mp_const_none;
++}
++static MP_DEFINE_CONST_FUN_OBJ_1(timing_init_obj, timing_init);
++
++static mp_obj_t timing_arm(mp_obj_t ms_in) {
++    mp_int_t ms = mp_obj_get_int(ms_in);
++    if (ms < 0) {
++        ms = 0;
++    }
++    if (timing_timer == NULL || MP_STATE_PORT(timing_callback) == MP_OBJ_NULL) {
++        mp_raise_ValueError(MP_ERROR_TEXT("init() first"));
++    }
++    // Relative due time in 100 ns units; -1 fires at once (0 would mean the
++    // epoch, an absolute time).
++    LARGE_INTEGER due;
++    due.QuadPart = ms == 0 ? -1 : -(LONGLONG)ms * 10000;
++    if (!SetWaitableTimer(timing_timer, &due, 0, NULL, NULL, FALSE)) {
++        mp_raise_OSError(GetLastError());
++    }
++    return mp_const_none;
++}
++static MP_DEFINE_CONST_FUN_OBJ_1(timing_arm_obj, timing_arm);
++
++static mp_obj_t timing_cancel(void) {
++    if (timing_timer != NULL) {
++        CancelWaitableTimer(timing_timer);
++    }
++    InterlockedExchange(&timing_pending, 0);
++    return mp_const_none;
++}
++static MP_DEFINE_CONST_FUN_OBJ_0(timing_cancel_obj, timing_cancel);
++
++static const mp_rom_map_elem_t timing_module_globals_table[] = {
++    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR__timing) },
++    { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&timing_init_obj) },
++    { MP_ROM_QSTR(MP_QSTR_arm), MP_ROM_PTR(&timing_arm_obj) },
++    { MP_ROM_QSTR(MP_QSTR_cancel), MP_ROM_PTR(&timing_cancel_obj) },
++};
++static MP_DEFINE_CONST_DICT(timing_module_globals, timing_module_globals_table);
++
++const mp_obj_module_t mp_module_timing = {
++    .base = { &mp_type_module },
++    .globals = (mp_obj_dict_t *)&timing_module_globals,
++};
++
++MP_REGISTER_MODULE(MP_QSTR__timing, mp_module_timing);
++MP_REGISTER_ROOT_POINTER(mp_obj_t timing_callback);
++
++#endif // MICROPY_PY_TIMING
+diff --git a/ports/windows/mp3_portable.h b/ports/windows/mp3_portable.h
+new file mode 100644
+index 0000000..bd7b734
+--- /dev/null
++++ b/ports/windows/mp3_portable.h
+@@ -0,0 +1,10 @@
++// CIRCUITPY-CHANGE: lib/mp3's assembly.h takes Visual C++'s inline assembly
++// for any _WIN32 compiler, and MinGW wants its portable C instead. lib/mp3
++// includes no MicroPython header (whose nlr.h needs _WIN32), so the system
++// headers it uses are included here first, while _WIN32 is still defined,
++// and _WIN32 is then undefined for the rest of each of its files.
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#undef _WIN32
+diff --git a/ports/windows/mpconfigport.h b/ports/windows/mpconfigport.h
+new file mode 100644
+index 0000000..40c832a
+--- /dev/null
++++ b/ports/windows/mpconfigport.h
+@@ -0,0 +1,361 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013, 2014 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++// options to control how MicroPython is built
++
++// Variant-specific definitions.
++#include "mpconfigvariant.h"
++
++// CIRCUITPY-CHANGE: as the unix port's mpconfigport.h
++#define CIRCUITPY_MICROPYTHON_ADVANCED (1)
++#define MICROPY_PY_ASYNC_AWAIT (1)
++#define MICROPY_PY_DOUBLE_TYPECODE (1)
++#define MICROPY_ENABLE_SELECTIVE_COLLECT (1)
++#define MICROPY_FATFS_ENABLE_LFN       (1)
++#define MICROPY_FATFS_RPATH            (2)
++#define MICROPY_FATFS_MAX_SS           (4096)
++#define MICROPY_FATFS_LFN_CODE_PAGE    437 /* 1=SFN/ANSI 437=LFN/U.S.(OEM) */
++#define MICROPY_FATFS_MKFS_FAT32       (1)
++#define MICROPY_FATFS_USE_LABEL        (1)
++#define MICROPY_PY_SYS_EXECUTABLE      (1)
++#define RUN_BACKGROUND_TASKS ((void)0)
++
++// By default use MicroPython version of readline
++#ifndef MICROPY_USE_READLINE
++#define MICROPY_USE_READLINE        (1)
++#endif
++#ifndef MICROPY_USE_READLINE_HISTORY
++#define MICROPY_USE_READLINE_HISTORY (1)
++#endif
++#ifndef MICROPY_READLINE_HISTORY_SIZE
++#define MICROPY_READLINE_HISTORY_SIZE (50)
++#endif
++
++#define MICROPY_ALLOC_PATH_MAX      (260) // see minwindef.h for msvc or limits.h for mingw
++#define MICROPY_PERSISTENT_CODE_LOAD (1)
++#define MICROPY_EMIT_X64            (0)
++#define MICROPY_EMIT_THUMB          (0)
++#define MICROPY_EMIT_INLINE_THUMB   (0)
++#define MICROPY_COMP_MODULE_CONST   (1)
++#define MICROPY_COMP_TRIPLE_TUPLE_ASSIGN (1)
++#define MICROPY_COMP_RETURN_IF_EXPR (1)
++#define MICROPY_ENABLE_GC           (1)
++#define MICROPY_ENABLE_FINALISER    (1)
++#define MICROPY_ENABLE_PYSTACK      (1)
++#define MICROPY_STACK_CHECK         (1)
++#define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
++#define MICROPY_MEM_STATS           (1)
++#define MICROPY_DEBUG_PRINTER       (&mp_stderr_print)
++#define MICROPY_DEBUG_PRINTERS      (1)
++#define MICROPY_READER_POSIX        (1)
++#define MICROPY_READER_VFS          (1)
++#define MICROPY_HELPER_REPL         (1)
++#define MICROPY_REPL_EMACS_KEYS     (1)
++#define MICROPY_REPL_AUTO_INDENT    (1)
++#define MICROPY_HELPER_LEXER_UNIX   (1)
++#define MICROPY_ENABLE_SOURCE_LINE  (1)
++#ifndef MICROPY_FLOAT_IMPL
++#define MICROPY_FLOAT_IMPL          (MICROPY_FLOAT_IMPL_DOUBLE)
++#endif
++#define MICROPY_LONGINT_IMPL        (MICROPY_LONGINT_IMPL_MPZ)
++#ifndef MICROPY_STREAMS_NON_BLOCK
++#define MICROPY_STREAMS_NON_BLOCK   (1)
++#endif
++#define MICROPY_STREAMS_POSIX_API   (1)
++#define MICROPY_OPT_COMPUTED_GOTO   (0)
++#define MICROPY_MODULE_OVERRIDE_MAIN_IMPORT (1)
++#define MICROPY_CAN_OVERRIDE_BUILTINS (1)
++#ifndef MICROPY_ENABLE_SCHEDULER
++#define MICROPY_ENABLE_SCHEDULER    (1)
++#endif
++// Host SDL / display timers enqueue via mp_sched_schedule; depth 4 overflows
++// under auto-refresh + app timers. Must be a power of 2.
++#ifndef MICROPY_SCHEDULER_DEPTH
++#define MICROPY_SCHEDULER_DEPTH     (16)
++#endif
++// _timing (mod_timing.c): one OS timer that wakes the main thread, for a port
++// with no signals and no machine.Timer. The VM hook and the internal event
++// hook let the main thread notice a deadline between bytecodes and inside
++// sleeps; the port's waits (sleeps, the console, a piped stdin) block on the
++// timer's event, so a deadline wakes them at once.
++#ifndef MICROPY_PY_TIMING
++#define MICROPY_PY_TIMING           (1)
++#endif
++#if MICROPY_PY_TIMING
++void mp_timing_poll(void);
++void mp_timing_wfe(unsigned long timeout_ms);
++int mp_timing_wait_input(void *input, unsigned long timeout_ms);
++#define MICROPY_VM_HOOK_COUNT       (64)
++#define MICROPY_VM_HOOK_INIT        static unsigned int vm_hook_divisor = MICROPY_VM_HOOK_COUNT;
++#define MICROPY_VM_HOOK_POLL        if (--vm_hook_divisor == 0) { vm_hook_divisor = MICROPY_VM_HOOK_COUNT; mp_timing_poll(); }
++#define MICROPY_VM_HOOK_LOOP        MICROPY_VM_HOOK_POLL
++#define MICROPY_VM_HOOK_RETURN      MICROPY_VM_HOOK_POLL
++#define MICROPY_INTERNAL_EVENT_HOOK mp_timing_poll()
++#endif
++#define MICROPY_VFS                 (1)
++#define MICROPY_VFS_POSIX           (1)
++#define MICROPY_PY_FUNCTION_ATTRS   (1)
++#define MICROPY_PY_DESCRIPTORS      (1)
++#define MICROPY_PY_DELATTR_SETATTR  (1)
++#define MICROPY_PY_FSTRINGS         (1)
++#define MICROPY_PY_BUILTINS_BYTES_HEX (1)
++#define MICROPY_PY_BUILTINS_STR_UNICODE (1)
++#define MICROPY_PY_BUILTINS_STR_CENTER (1)
++#define MICROPY_PY_BUILTINS_STR_PARTITION (1)
++#define MICROPY_PY_BUILTINS_STR_SPLITLINES (1)
++#define MICROPY_PY_BUILTINS_MEMORYVIEW (1)
++#define MICROPY_PY_BUILTINS_FROZENSET (1)
++#define MICROPY_PY_BUILTINS_COMPILE (1)
++#define MICROPY_PY_BUILTINS_NOTIMPLEMENTED (1)
++#define MICROPY_PY_BUILTINS_INPUT   (1)
++#define MICROPY_PY_BUILTINS_POW3    (1)
++#ifndef MICROPY_PY_BUILTINS_HELP
++#define MICROPY_PY_BUILTINS_HELP    (1)
++#endif
++#ifndef MICROPY_PY_BUILTINS_HELP_MODULES
++#define MICROPY_PY_BUILTINS_HELP_MODULES (1)
++#endif
++#define MICROPY_PY_BUILTINS_ROUND_INT (1)
++#define MICROPY_PY_MICROPYTHON_MEM_INFO (1)
++#define MICROPY_PY_ALL_SPECIAL_METHODS (1)
++#define MICROPY_PY_REVERSE_SPECIAL_METHODS (1)
++#define MICROPY_PY_ARRAY_SLICE_ASSIGN (1)
++#define MICROPY_PY_BUILTINS_SLICE_ATTRS (1)
++#define MICROPY_PY_SYS_PATH_ARGV_DEFAULTS (0)
++#ifndef MICROPY_PY_SOCKET
++// CIRCUITPY-CHANGE: off, as on unix
++#define MICROPY_PY_SOCKET           (0)
++#endif
++#define MICROPY_PY_SYS_EXIT         (1)
++#define MICROPY_PY_SYS_ATEXIT       (1)
++#define MICROPY_PY_SYS_PLATFORM     "win32"
++#ifndef MICROPY_PY_SYS_PATH_DEFAULT
++#define MICROPY_PY_SYS_PATH_DEFAULT ".frozen;~/.micropython/lib"
++#endif
++#define MICROPY_PY_SYS_MAXSIZE      (1)
++#define MICROPY_PY_SYS_STDFILES     (1)
++#define MICROPY_PY_SYS_EXC_INFO     (1)
++#define MICROPY_PY_COLLECTIONS_DEQUE (1)
++#define MICROPY_PY_COLLECTIONS_DEQUE_ITER (1)
++#define MICROPY_PY_COLLECTIONS_DEQUE_SUBSCR (1)
++#define MICROPY_PY_COLLECTIONS_ORDEREDDICT (1)
++#ifndef MICROPY_PY_MATH_SPECIAL_FUNCTIONS
++#define MICROPY_PY_MATH_SPECIAL_FUNCTIONS (1)
++#endif
++#define MICROPY_PY_MATH_ISCLOSE     (MICROPY_PY_MATH_SPECIAL_FUNCTIONS)
++#define MICROPY_PY_CMATH            (1)
++#define MICROPY_PY_IO_IOBASE        (1)
++#define MICROPY_PY_GC_COLLECT_RETVAL (1)
++#ifndef MICROPY_STACKLESS
++#define MICROPY_STACKLESS           (0)
++#define MICROPY_STACKLESS_STRICT    (0)
++#endif
++
++#define MICROPY_PY_OS               (1)
++#define MICROPY_PY_OS_INCLUDEFILE   "ports/unix/modos.c"
++#define MICROPY_PY_OS_ERRNO         (1)
++#define MICROPY_PY_OS_GETENV_PUTENV_UNSETENV (1)
++#define MICROPY_PY_OS_STATVFS       (0)
++#define MICROPY_PY_OS_SYSTEM        (1)
++#define MICROPY_PY_OS_URANDOM       (1)
++#define MICROPY_PY_TIME             (1)
++#define MICROPY_PY_TIME_TIME_TIME_NS (1)
++#define MICROPY_PY_TIME_CUSTOM_SLEEP (1)
++#define MICROPY_PY_TIME_INCLUDEFILE "ports/unix/modtime.c"
++#define MICROPY_PY_ERRNO            (1)
++#ifndef MICROPY_PY_FFI
++#define MICROPY_PY_FFI              (1)
++#endif
++#ifndef MICROPY_TRACKED_ALLOC
++#define MICROPY_TRACKED_ALLOC       (MICROPY_PY_FFI)
++#endif
++// uctypes stays on, though CircuitPython turns it off on unix: ffi calls into
++// Windows DLLs, and their structs are read and written with uctypes.
++#define MICROPY_PY_UCTYPES          (1)
++#define MICROPY_PY_DEFLATE          (1)
++#define MICROPY_PY_DEFLATE_COMPRESS (1)
++#define MICROPY_PY_JSON             (1)
++#define MICROPY_PY_RE               (1)
++#define MICROPY_PY_HEAPQ            (1)
++#define MICROPY_PY_HASHLIB          (1)
++#define MICROPY_PY_BINASCII         (1)
++#define MICROPY_PY_BINASCII_CRC32   (1)
++#define MICROPY_PY_RANDOM           (1)
++#define MICROPY_PY_MACHINE          (1)
++#define MICROPY_PY_MACHINE_INCLUDEFILE "ports/unix/modmachine.c"
++#define MICROPY_PY_MACHINE_PULSE    (1)
++#define MICROPY_PY_MACHINE_PIN_BASE (1)
++#define MICROPY_MACHINE_MEM_GET_READ_ADDR   mod_machine_mem_get_addr
++#define MICROPY_MACHINE_MEM_GET_WRITE_ADDR  mod_machine_mem_get_addr
++
++// Enable support for compile-only mode.
++#define MICROPY_PYEXEC_COMPILE_ONLY (1)
++
++// Enable handling of sys.exit() exit codes.
++#define MICROPY_PYEXEC_ENABLE_EXIT_CODE_HANDLING (1)
++
++#define MICROPY_ERROR_REPORTING     (MICROPY_ERROR_REPORTING_DETAILED)
++#define MICROPY_ERROR_PRINTER       (&mp_stderr_print)
++#define MICROPY_WARNINGS            (1)
++#define MICROPY_PY_STR_BYTES_CMP_WARN (1)
++
++// VFS stat functions should return time values relative to 1970/1/1
++#define MICROPY_EPOCH_IS_1970       (1)
++
++extern const struct _mp_print_t mp_stderr_print;
++
++// CIRCUITPY-CHANGE: seed random on import, as the unix port does.
++#ifdef MICROPY_PY_RANDOM_SEED_INIT_FUNC
++#include <stddef.h>
++void mp_hal_get_random(size_t n, void *buf);
++static inline unsigned long mp_random_seed_init(void) {
++    unsigned long r;
++    mp_hal_get_random(sizeof(r), &r);
++    return r;
++}
++#endif
++
++#ifdef _MSC_VER
++#define MICROPY_GCREGS_SETJMP       (1)
++#define MICROPY_USE_INTERNAL_PRINTF (0)
++#endif
++
++#define MICROPY_ENABLE_EMERGENCY_EXCEPTION_BUF   (1)
++#define MICROPY_EMERGENCY_EXCEPTION_BUF_SIZE     (256)
++#define MICROPY_KBD_EXCEPTION       (1)
++
++#define MICROPY_PORT_INIT_FUNC      init()
++#define MICROPY_PORT_DEINIT_FUNC    deinit()
++
++// type definitions for the specific machine
++
++#if defined(__MINGW32__) && defined(_WIN64)
++#define MP_SSIZE_MAX __INT64_MAX__
++#endif
++
++typedef long suseconds_t;
++
++// Just assume Windows is little-endian - mingw32 gcc doesn't
++// define standard endianness macros.
++#define MP_ENDIANNESS_LITTLE (1)
++
++// Cannot include <sys/types.h>, as it may lead to symbol name clashes
++#if _FILE_OFFSET_BITS == 64 && !defined(__LP64__)
++typedef long long mp_off_t;
++#else
++typedef long mp_off_t;
++#endif
++
++#define MP_STATE_PORT               MP_STATE_VM
++
++#define MICROPY_MPHALPORT_H         "windows_mphal.h"
++
++// We need to provide a declaration/definition of alloca()
++#include <malloc.h>
++
++#include "realpath.h"
++#include "init.h"
++
++#ifdef __GNUC__
++#define MP_NOINLINE __attribute__((noinline))
++#endif
++
++// MSVC specifics
++#ifdef _MSC_VER
++
++// Sanity check
++
++#if (_MSC_VER < 1800)
++    #error Can only build with Visual Studio 2013 toolset
++#endif
++
++
++// CL specific overrides from mpconfig
++
++#define MP_NORETURN                 __declspec(noreturn)
++#define MP_WEAK
++#define MP_NOINLINE                 __declspec(noinline)
++#define MP_ALWAYSINLINE             __forceinline
++#define MP_LIKELY(x)                (x)
++#define MP_UNLIKELY(x)              (x)
++#define MICROPY_PORT_CONSTANTS      { MP_ROM_QSTR(MP_QSTR_dummy), MP_ROM_PTR(NULL) } // can't have zero-sized array
++#ifdef _WIN64
++#define MP_SSIZE_MAX                _I64_MAX
++#else
++#define MP_SSIZE_MAX                _I32_MAX
++#endif
++
++// VC++ 12.0 fixes
++#if (_MSC_VER <= 1800)
++#define MICROPY_PY_MATH_ATAN2_FIX_INFNAN (1)
++#define MICROPY_PY_MATH_FMOD_FIX_INFNAN (1)
++#ifdef _WIN64
++#define MICROPY_PY_MATH_MODF_FIX_NEGZERO (1)
++#else
++#define MICROPY_PY_MATH_POW_FIX_NAN (1)
++#endif
++#endif
++
++// VC++ 2017 fixes
++#if (_MSC_VER < 1920)
++#define MICROPY_PY_MATH_COPYSIGN_FIX_NAN (1)
++#endif
++
++// CL specific definitions
++
++#ifndef __cplusplus
++#define restrict
++#define inline                      __inline
++#define alignof(t)                  __alignof(t)
++#endif
++#define PATH_MAX                    MICROPY_ALLOC_PATH_MAX
++#define S_ISREG(m)                  (((m) & S_IFMT) == S_IFREG)
++#define S_ISDIR(m)                  (((m) & S_IFMT) == S_IFDIR)
++#ifdef _WIN64
++#define SSIZE_MAX                   _I64_MAX
++typedef __int64 ssize_t;
++#else
++#define SSIZE_MAX                   _I32_MAX
++typedef int ssize_t;
++#endif
++typedef mp_off_t off_t;
++
++
++// Put static/global variables in sections with a known name
++// This used to be required for GC, not the case anymore but keep it as it makes the map file easier to inspect
++// For this to work this header must be included by all sources, which is the case normally
++#define MICROPY_PORT_DATASECTION "upydata"
++#define MICROPY_PORT_BSSSECTION "upybss"
++#pragma data_seg(MICROPY_PORT_DATASECTION)
++#pragma bss_seg(MICROPY_PORT_BSSSECTION)
++
++
++// System headers (needed e.g. for nlr.h)
++
++#include <stddef.h> // for NULL
++#include <assert.h> // for assert
++
++#endif
+diff --git a/ports/windows/mpconfigport.mk b/ports/windows/mpconfigport.mk
+new file mode 100644
+index 0000000..c7d1a8b
+--- /dev/null
++++ b/ports/windows/mpconfigport.mk
+@@ -0,0 +1,25 @@
++# Enable/disable modules and 3rd-party libs to be included in interpreter
++
++MICROPY_PY_FFI ?= 1
++
++# Build 32-bit binaries on a 64-bit host
++MICROPY_FORCE_32BIT ?= 0
++
++# This variable can take the following values:
++#  0 - no readline, just simple stdin input
++#  1 - use MicroPython version of readline
++MICROPY_USE_READLINE ?= 1
++
++# CIRCUITPY-CHANGE: as the unix port's mpconfigport.mk, less what Windows
++# doesn't have (termios, pthreads).
++MICROPY_PY_BTREE = 0
++MICROPY_PY_SOCKET = 0
++MICROPY_PY_SSL = 0
++MICROPY_SSL_AXTLS = 0
++MICROPY_SSL_MBEDTLS = 0
++MICROPY_ROM_TEXT_COMPRESSION = 0
++MICROPY_VFS_FAT = 1
++MICROPY_VFS_LFS1 = 0
++MICROPY_VFS_LFS2 = 0
++CIRCUITPY_ULAB = 1
++CIRCUITPY_MESSAGE_COMPRESSION_LEVEL = 1
+diff --git a/ports/windows/realpath.c b/ports/windows/realpath.c
+new file mode 100644
+index 0000000..7aa2ca2
+--- /dev/null
++++ b/ports/windows/realpath.c
+@@ -0,0 +1,69 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013, 2014 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++#include <stdlib.h>
++#include <errno.h>
++#include <unistd.h>
++#include "realpath.h"
++
++// Make sure a path only has forward slashes.
++// CIRCUITPY-CHANGE: static (-Wmissing-prototypes)
++static char *to_unix_path(char *p) {
++    if (p != NULL) {
++        char *pp = p;
++        while (*pp != 0) {
++            if (*pp == '\\') {
++                *pp = '/';
++            }
++            ++pp;
++        }
++    }
++    return p;
++}
++
++// Implement realpath() using _fullpath and make it use the same error codes as realpath() on unix.
++// Also have it return a path with forward slashes only as some code relies on this,
++// but _fullpath() returns backward slashes no matter what.
++char *realpath(const char *path, char *resolved_path) {
++    char *ret = NULL;
++    if (path == NULL) {
++        errno = EINVAL;
++    } else if (access(path, R_OK) == 0) {
++        ret = resolved_path;
++        if (ret == NULL) {
++            ret = malloc(_MAX_PATH);
++        }
++        if (ret == NULL) {
++            errno = ENOMEM;
++        } else {
++            ret = _fullpath(ret, path, _MAX_PATH);
++            if (ret == NULL) {
++                errno = EIO;
++            }
++        }
++    }
++    return to_unix_path(ret);
++}
+diff --git a/ports/windows/realpath.h b/ports/windows/realpath.h
+new file mode 100644
+index 0000000..869fe80
+--- /dev/null
++++ b/ports/windows/realpath.h
+@@ -0,0 +1,31 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2013, 2014 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#ifndef MICROPY_INCLUDED_WINDOWS_REALPATH_H
++#define MICROPY_INCLUDED_WINDOWS_REALPATH_H
++
++extern char *realpath(const char *path, char *resolved_path);
++
++#endif // MICROPY_INCLUDED_WINDOWS_REALPATH_H
+diff --git a/ports/windows/sleep.h b/ports/windows/sleep.h
+new file mode 100644
+index 0000000..da76e21
+--- /dev/null
++++ b/ports/windows/sleep.h
+@@ -0,0 +1,39 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#ifndef MICROPY_INCLUDED_WINDOWS_SLEEP_H
++#define MICROPY_INCLUDED_WINDOWS_SLEEP_H
++
++// The main sleep implementation for the Windows port.
++void msec_sleep(double msec);
++
++// Define usleep() because some of the unix port's code uses that.
++// Mingw and the likes provide a definition of usleep(), note however
++// that it's also just Sleep(usec/1000).
++#ifdef _MSC_VER
++int usleep(__int64 usec);
++#endif
++
++#endif // MICROPY_INCLUDED_WINDOWS_SLEEP_H
+diff --git a/ports/windows/variants/coverage/cpp_coverage.c b/ports/windows/variants/coverage/cpp_coverage.c
+new file mode 100644
+index 0000000..59fe860
+--- /dev/null
++++ b/ports/windows/variants/coverage/cpp_coverage.c
+@@ -0,0 +1,12 @@
++// The unix coverage variant's extra_cpp_coverage() checks that the public API
++// compiles as C++ (ports/unix/coveragecpp.cpp). MinGW's linker keeps that
++// file's function objects, which name functions nothing defines, so the C++
++// check is left out here and this stands in for it, with the same result.
++
++#include "py/obj.h"
++
++mp_obj_t extra_cpp_coverage(void);
++mp_obj_t extra_cpp_coverage(void) {
++    return mp_const_none;
++}
++MP_DEFINE_CONST_FUN_OBJ_0(extra_cpp_coverage_obj, extra_cpp_coverage);
+diff --git a/ports/windows/variants/coverage/mpconfigvariant.h b/ports/windows/variants/coverage/mpconfigvariant.h
+new file mode 100644
+index 0000000..f0da42f
+--- /dev/null
++++ b/ports/windows/variants/coverage/mpconfigvariant.h
+@@ -0,0 +1,60 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2026 PyDevices contributors
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++// The unix port's coverage variant, for Windows: the same feature level and
++// CircuitPython modules, without gcov.
++
++#define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_EVERYTHING)
++
++#define MICROPY_GC_SPLIT_HEAP          (1)
++#define MICROPY_GC_SPLIT_HEAP_N_HEAPS  (4)
++
++#define MICROPY_DEBUG_PARSE_RULE_NAME  (1)
++#define MICROPY_PY_SYS_SETTRACE        (0)
++#define MICROPY_TRACKED_ALLOC          (1)
++#define MICROPY_WARNINGS_CATEGORY      (1)
++#define MICROPY_SCHEDULER_STATIC_NODES (0)
++
++#define MICROPY_PY_OS_UNAME            (1)
++#define MICROPY_HW_BOARD_NAME          "a machine"
++#define MICROPY_HW_MCU_NAME            MICROPY_PY_SYS_PLATFORM
++#define MICROPY_BANNER_MACHINE MICROPY_PY_SYS_PLATFORM " [" MICROPY_PLATFORM_COMPILER "] version"
++
++// Things never used in CircuitPython.
++#define MICROPY_PY_CRYPTOLIB           (0)
++#define MICROPY_PY_CRYPTOLIB_CTR       (0)
++#define MICROPY_PY_MICROPYTHON_RINGIO  (0)
++// CircuitPython uses shared-bindings struct.
++#define MICROPY_PY_STRUCT              (0)
++#define MICROPY_VFS_ROM_IOCTL          (0)
++
++// From the unix variants' common file.
++#define MICROPY_REPL_EMACS_WORDS_MOVE  (1)
++#define MICROPY_REPL_EMACS_EXTRA_WORDS_MOVE (1)
++#define MICROPY_PY_RANDOM_SEED_INIT_FUNC (mp_random_seed_init())
++#define MICROPY_PY_SELECT              (1)
++#define MICROPY_PY_SELECT_SELECT       (0)
++#define MICROPY_VFS_ROM                (1)
+diff --git a/ports/windows/variants/coverage/mpconfigvariant.mk b/ports/windows/variants/coverage/mpconfigvariant.mk
+new file mode 100644
+index 0000000..4b7aa24
+--- /dev/null
++++ b/ports/windows/variants/coverage/mpconfigvariant.mk
+@@ -0,0 +1,17 @@
++# The unix port's coverage variant, for Windows: its CircuitPython modules,
++# and its test modules, without gcov (the profile data would be written to the
++# build machine's paths).
++include ../unix/variants/coverage/mpconfigvariant.mk
++
++CFLAGS := $(filter-out -fprofile-arcs -ftest-coverage,$(CFLAGS))
++LDFLAGS := $(filter-out -fprofile-arcs -ftest-coverage,$(LDFLAGS))
++# The unix variant names its own port's files from the port directory.
++SRC_C := $(patsubst displayio_min.c,ports/unix/displayio_min.c,$(patsubst coverage.c,ports/unix/coverage.c,$(patsubst native_base_class.c,ports/unix/native_base_class.c,$(SRC_C))))
++# The C++ check is left out (see cpp_coverage.c).
++SRC_CXX := $(filter-out coveragecpp.cpp,$(SRC_CXX))
++
++FROZEN_MANIFEST = ../unix/variants/coverage/manifest.py
++
++
++# lib/mp3 takes its portable C, not Visual C++'s inline assembly (see ../../mp3_portable.h).
++$(BUILD)/lib/mp3/src/%.o: CFLAGS += -include mp3_portable.h
+diff --git a/ports/windows/variants/manifest.py b/ports/windows/variants/manifest.py
+new file mode 100644
+index 0000000..a6cf73e
+--- /dev/null
++++ b/ports/windows/variants/manifest.py
+@@ -0,0 +1 @@
++# CIRCUITPY-CHANGE: nothing frozen by default (MicroPython's port freezes ssl).
+diff --git a/ports/windows/windows_mphal.c b/ports/windows/windows_mphal.c
+new file mode 100644
+index 0000000..0d3d8e8
+--- /dev/null
++++ b/ports/windows/windows_mphal.c
+@@ -0,0 +1,372 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++
++#include "py/runtime.h"
++#include "py/mphal.h"
++#include "py/mpthread.h"
++
++#include <sys/time.h>
++#include <windows.h>
++#include <unistd.h>
++#include <bcrypt.h>
++
++HANDLE std_in = NULL;
++HANDLE con_out = NULL;
++DWORD orig_mode = 0;
++
++static void assure_stdin_handle(void) {
++    if (!std_in) {
++        std_in = GetStdHandle(STD_INPUT_HANDLE);
++        assert(std_in != INVALID_HANDLE_VALUE);
++    }
++}
++
++static void assure_conout_handle(void) {
++    if (!con_out) {
++        con_out = CreateFile("CONOUT$", GENERIC_READ | GENERIC_WRITE,
++            FILE_SHARE_READ | FILE_SHARE_WRITE,
++            NULL, OPEN_EXISTING, 0, 0);
++        assert(con_out != INVALID_HANDLE_VALUE);
++    }
++}
++
++void mp_hal_stdio_mode_raw(void) {
++    assure_stdin_handle();
++    GetConsoleMode(std_in, &orig_mode);
++    DWORD mode = orig_mode;
++    mode &= ~ENABLE_ECHO_INPUT;
++    mode &= ~ENABLE_LINE_INPUT;
++    mode &= ~ENABLE_PROCESSED_INPUT;
++    SetConsoleMode(std_in, mode);
++}
++
++void mp_hal_stdio_mode_orig(void) {
++    assure_stdin_handle();
++    SetConsoleMode(std_in, orig_mode);
++}
++
++// Handler to be installed by SetConsoleCtrlHandler, currently used only to handle Ctrl-C.
++// This handler has to be installed just once (this has to be done elsewhere in init code).
++// Previous versions of the mp_hal code would install a handler whenever Ctrl-C input is
++// allowed and remove the handler again when it is not. That is not necessary though (1),
++// and it might introduce problems (2) because console notifications are delivered to the
++// application in a separate thread.
++// (1) mp_hal_set_interrupt_char effectively enables/disables processing of Ctrl-C via the
++// ENABLE_PROCESSED_INPUT flag so in raw mode console_sighandler won't be called.
++// (2) if mp_hal_set_interrupt_char would remove the handler while Ctrl-C was issued earlier,
++// the thread created for handling it might not be running yet so we'd miss the notification.
++BOOL WINAPI console_sighandler(DWORD evt);
++BOOL WINAPI console_sighandler(DWORD evt) {
++    if (evt == CTRL_C_EVENT) {
++        if (MP_STATE_MAIN_THREAD(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
++            // this is the second time we are called, so die straight away
++            exit(1);
++        }
++        mp_sched_keyboard_interrupt();
++        return TRUE;
++    }
++    return FALSE;
++}
++
++// CIRCUITPY-CHANGE: mp_hal_set_interrupt_char(int) instead of char
++void mp_hal_set_interrupt_char(int c) {
++    assure_stdin_handle();
++    if (c == CHAR_CTRL_C) {
++        DWORD mode;
++        GetConsoleMode(std_in, &mode);
++        mode |= ENABLE_PROCESSED_INPUT;
++        SetConsoleMode(std_in, mode);
++    } else {
++        DWORD mode;
++        GetConsoleMode(std_in, &mode);
++        mode &= ~ENABLE_PROCESSED_INPUT;
++        SetConsoleMode(std_in, mode);
++    }
++}
++
++// CIRCUITPY-CHANGE
++bool mp_hal_is_interrupted(void) {
++    return false;
++}
++
++void mp_hal_move_cursor_back(uint pos) {
++    if (!pos) {
++        return;
++    }
++    assure_conout_handle();
++    CONSOLE_SCREEN_BUFFER_INFO info;
++    GetConsoleScreenBufferInfo(con_out, &info);
++    info.dwCursorPosition.X -= (short)pos;
++    // Move up a line if needed.
++    while (info.dwCursorPosition.X < 0) {
++        info.dwCursorPosition.X = info.dwSize.X + info.dwCursorPosition.X;
++        info.dwCursorPosition.Y -= 1;
++    }
++    // Caller requested to move out of the screen. That's not possible so just clip,
++    // it's the caller's responsibility to not let this happen.
++    if (info.dwCursorPosition.Y < 0) {
++        info.dwCursorPosition.X = 0;
++        info.dwCursorPosition.Y = 0;
++    }
++    SetConsoleCursorPosition(con_out, info.dwCursorPosition);
++}
++
++void mp_hal_erase_line_from_cursor(uint n_chars_to_erase) {
++    assure_conout_handle();
++    CONSOLE_SCREEN_BUFFER_INFO info;
++    GetConsoleScreenBufferInfo(con_out, &info);
++    DWORD written;
++    FillConsoleOutputCharacter(con_out, ' ', n_chars_to_erase, info.dwCursorPosition, &written);
++    FillConsoleOutputAttribute(con_out, info.wAttributes, n_chars_to_erase, info.dwCursorPosition, &written);
++}
++
++typedef struct item_t {
++    WORD vkey;
++    const char *seq;
++} item_t;
++
++// map virtual key codes to key sequences known by MicroPython's readline implementation
++static item_t keyCodeMap[] = {
++    {VK_UP, "[A"},
++    {VK_DOWN, "[B"},
++    {VK_RIGHT, "[C"},
++    {VK_LEFT, "[D"},
++    {VK_HOME, "[H"},
++    {VK_END, "[F"},
++    {VK_DELETE, "[3~"},
++    {0, ""} // sentinel
++};
++
++// likewise, but with Ctrl key down
++static item_t ctrlKeyCodeMap[] = {
++    {VK_LEFT, "b"},
++    {VK_RIGHT, "f"},
++    {VK_DELETE, "d"},
++    {VK_BACK, "\x7F"},
++    {0, ""} // sentinel
++};
++
++static const char *cur_esc_seq = NULL;
++
++static int esc_seq_process_vk(WORD vk, bool ctrl_key_down) {
++    for (item_t *p = (ctrl_key_down ? ctrlKeyCodeMap : keyCodeMap); p->vkey != 0; ++p) {
++        if (p->vkey == vk) {
++            cur_esc_seq = p->seq;
++            return 27; // ESC, start of escape sequence
++        }
++    }
++    return 0; // nothing found
++}
++
++static int esc_seq_chr(void) {
++    if (cur_esc_seq) {
++        const char c = *cur_esc_seq++;
++        if (c) {
++            return c;
++        }
++        cur_esc_seq = NULL;
++    }
++    return 0;
++}
++
++// Stdin that is not a console (a pipe, a file, NUL): ReadConsoleInput fails on
++// it, so read bytes the way the unix port does. A CR LF pair is one Enter, a
++// lone LF is Enter too, and end of input or a failed read is Ctrl-D, which ends
++// the REPL. A last line with no newline is submitted before that Ctrl-D.
++static int stdin_rx_chr_pipe(void) {
++    static bool after_cr = false;
++    static bool at_eof = false;
++    static bool line_open = false;
++    for (;;) {
++        if (at_eof) {
++            if (line_open) {
++                line_open = false;
++                return '\r';
++            }
++            return CHAR_CTRL_D;
++        }
++        unsigned char c;
++        DWORD num_read = 0;
++        #if MICROPY_PY_TIMING
++        // A pipe read blocks with nothing to wake it: while it is empty, wait
++        // on _timing's event (10 ms at most) and run what came due, so timers
++        // and other pending callbacks are served while the REPL waits for a
++        // line (a file redirect fails the peek and reads on).
++        DWORD avail = 0;
++        if (PeekNamedPipe(std_in, NULL, 0, NULL, &avail, NULL) && avail == 0) {
++            mp_timing_wfe(10);
++            mp_event_handle_nowait();
++            continue;
++        }
++        #endif
++        MP_THREAD_GIL_EXIT();
++        BOOL status = ReadFile(std_in, &c, 1, &num_read, NULL);
++        MP_THREAD_GIL_ENTER();
++        if (!status || !num_read) {
++            at_eof = true;
++            continue;
++        }
++        if (c == '\n' && after_cr) {
++            after_cr = false;
++            continue;
++        }
++        after_cr = c == '\r';
++        if (c == '\n') {
++            c = '\r';
++        }
++        line_open = c != '\r';
++        return c;
++    }
++}
++
++int mp_hal_stdin_rx_chr(void) {
++    // currently processing escape seq?
++    const int ret = esc_seq_chr();
++    if (ret) {
++        return ret;
++    }
++
++    assure_stdin_handle();
++    DWORD console_mode;
++    if (!GetConsoleMode(std_in, &console_mode)) {
++        return stdin_rx_chr_pipe();
++    }
++
++    // poll until key which we handle is pressed
++    BOOL status;
++    DWORD num_read;
++    INPUT_RECORD rec;
++    for (;;) {
++        #if MICROPY_PY_TIMING
++        // Wait for a key or a _timing deadline, whichever comes first, so a
++        // timer callback runs the moment it is due while the REPL sits at its
++        // prompt. The console handle signals when an input record is
++        // available; the 100 ms bound is only a safety net.
++        if (!mp_timing_wait_input(std_in, 100)) {
++            mp_event_handle_nowait();
++            continue;
++        }
++        #endif
++        MP_THREAD_GIL_EXIT();
++        status = ReadConsoleInput(std_in, &rec, 1, &num_read);
++        MP_THREAD_GIL_ENTER();
++        if (!status || !num_read) {
++            // A failed read has to end the REPL. Ctrl-C only cancels the line,
++            // so the REPL would read again, fail again and spin on prompts.
++            return CHAR_CTRL_D;
++        }
++        if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown) { // only want key down events
++            continue;
++        }
++        const bool ctrl_key_down = (rec.Event.KeyEvent.dwControlKeyState & LEFT_CTRL_PRESSED) ||
++            (rec.Event.KeyEvent.dwControlKeyState & RIGHT_CTRL_PRESSED);
++        const int vk_ret = esc_seq_process_vk(rec.Event.KeyEvent.wVirtualKeyCode, ctrl_key_down);
++        if (vk_ret) {
++            return vk_ret;
++        }
++        const char c = rec.Event.KeyEvent.uChar.AsciiChar;
++        if (c) { // plain ascii char, return it
++            return c;
++        }
++    }
++}
++
++mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
++    MP_THREAD_GIL_EXIT();
++    int ret = write(STDOUT_FILENO, str, len);
++    MP_THREAD_GIL_ENTER();
++    return ret < 0 ? 0 : ret; // return the number of bytes written, so in case of an error in the syscall, return 0
++}
++
++void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
++    mp_hal_stdout_tx_strn(str, len);
++}
++
++void mp_hal_stdout_tx_str(const char *str) {
++    mp_hal_stdout_tx_strn(str, strlen(str));
++}
++
++mp_uint_t mp_hal_ticks_ms(void) {
++    struct timeval tv;
++    gettimeofday(&tv, NULL);
++    return tv.tv_sec * 1000 + tv.tv_usec / 1000;
++}
++
++mp_uint_t mp_hal_ticks_us(void) {
++    struct timeval tv;
++    gettimeofday(&tv, NULL);
++    return tv.tv_sec * 1000000 + tv.tv_usec;
++}
++
++mp_uint_t mp_hal_ticks_cpu(void) {
++    LARGE_INTEGER value;
++    QueryPerformanceCounter(&value);
++    #ifdef _WIN64
++    return value.QuadPart;
++    #else
++    return value.LowPart;
++    #endif
++}
++
++uint64_t mp_hal_time_ns(void) {
++    struct timeval tv;
++    gettimeofday(&tv, NULL);
++    return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
++}
++
++void msec_sleep(double msec) {
++    if (msec < 0.0) {
++        msec = 0.0;
++    }
++    SleepEx((DWORD)msec, TRUE);
++}
++
++#ifdef _MSC_VER
++int usleep(__int64 usec) {
++    msec_sleep((double)usec / 1000.0);
++    return 0;
++}
++#endif
++
++void mp_hal_delay_ms(mp_uint_t ms) {
++    #if MICROPY_ENABLE_SCHEDULER
++    mp_uint_t start = mp_hal_ticks_ms();
++    while (mp_hal_ticks_ms() - start < ms) {
++        mp_event_wait_ms(1);
++    }
++    #else
++    msec_sleep((double)ms);
++    #endif
++}
++
++// CIRCUITPY-CHANGE: void *buf
++void mp_hal_get_random(size_t n, void *buf) {
++    NTSTATUS result = BCryptGenRandom(NULL, (unsigned char *)buf, n, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
++    if (!BCRYPT_SUCCESS(result)) {
++        mp_raise_OSError(errno);
++    }
++}
+diff --git a/ports/windows/windows_mphal.h b/ports/windows/windows_mphal.h
+new file mode 100644
+index 0000000..f56d55b
+--- /dev/null
++++ b/ports/windows/windows_mphal.h
+@@ -0,0 +1,51 @@
++/*
++ * This file is part of the MicroPython project, http://micropython.org/
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015 Damien P. George
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++#include "sleep.h"
++#include "ports/unix/mphalport.h"
++
++// Don't use the unix version of this macro.
++#undef MICROPY_INTERNAL_WFE
++
++#if MICROPY_ENABLE_SCHEDULER && MICROPY_PY_TIMING
++// Wait on _timing's event (mod_timing.c), so a sleep returns the moment a
++// deadline passes instead of at the end of its time slice.
++#define MICROPY_INTERNAL_WFE(TIMEOUT_MS) mp_timing_wfe((unsigned long)MAX(1, (TIMEOUT_MS)))
++#elif MICROPY_ENABLE_SCHEDULER
++// Use minimum 1mSec sleep to make sure there is effectively a wait period:
++// something like usleep(500) truncates and ends up calling Sleep(0).
++#define MICROPY_INTERNAL_WFE(TIMEOUT_MS) msec_sleep(MAX(1.0, (double)(TIMEOUT_MS)))
++#else
++#define MICROPY_INTERNAL_WFE(TIMEOUT_MS) /* No-op */
++#endif
++
++#define MICROPY_HAL_HAS_VT100 (0)
++
++void mp_hal_move_cursor_back(unsigned int pos);
++void mp_hal_erase_line_from_cursor(unsigned int n_chars_to_erase);
++
++#undef mp_hal_ticks_cpu
++mp_uint_t mp_hal_ticks_cpu(void);
+diff --git a/py/enum.c b/py/enum.c
+index 7a261b5..66a8321 100644
+--- a/py/enum.c
++++ b/py/enum.c
+@@ -26,5 +26,7 @@ int cp_enum_value(const mp_obj_type_t *type, mp_obj_t obj, qstr arg_name) {
+ void cp_enum_obj_print_helper(uint16_t module, const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+     (void)kind;
+     cp_enum_obj_t *self = MP_OBJ_TO_PTR(self_in);
+-    mp_printf(print, "%q.%q.%q", module, self->base.type->name, self->name);
++    // %q reads a qstr (size_t): passed narrower, the 64-bit Windows ABI leaves
++    // the top half of a stack argument unset.
++    mp_printf(print, "%q.%q.%q", (qstr)module, (qstr)self->base.type->name, (qstr)self->name);
+ }
+diff --git a/py/objint.c b/py/objint.c
+index e8f7f51..23335f1 100644
+--- a/py/objint.c
++++ b/py/objint.c
+@@ -419,8 +419,9 @@ static mp_obj_t int_bit_length(mp_obj_t self_in) {
+         mp_uint_t value =
+             (int_val == 0) ? 0 :
+             (int_val == MP_SMALL_INT_MIN) ? 8 * sizeof(mp_int_t) :
+-            (int_val < 0) ? 8 * sizeof(long) - __builtin_clzl(-int_val) :
+-            8 * sizeof(long) - __builtin_clzl(int_val);
++            // long long: mp_int_t is wider than long where long is 32 bits (64-bit Windows).
++            (int_val < 0) ? 8 * sizeof(long long) - __builtin_clzll(-int_val) :
++            8 * sizeof(long long) - __builtin_clzll(int_val);
+         return mp_obj_new_int_from_uint(value);
+     }
+ 
