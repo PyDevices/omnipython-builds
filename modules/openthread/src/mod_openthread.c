@@ -38,6 +38,9 @@
 #include "esp_openthread_lock.h"
 #include "esp_openthread_types.h"
 #include "esp_vfs_eventfd.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include "openthread/dataset.h"
 #include "openthread/dataset_ftd.h"
@@ -124,6 +127,36 @@ static mp_obj_t ot_addr_str(const otIp6Address *addr) {
 
 // --- start and stop -------------------------------------------------------------
 
+// The OpenThread task is ours, not esp_openthread_start()'s. ESP-IDF creates
+// its task inside an assert(), which a build without assertions (MicroPython's
+// esp32 port) compiles out, and then waits forever for a task that was never
+// made. It also stops the board on an init error instead of reporting it.
+static esp_openthread_config_t s_config = {
+    .platform_config = {
+        .radio_config = { .radio_mode = RADIO_MODE_NATIVE },
+        .host_config = { .host_connection_mode = HOST_CONNECTION_MODE_NONE },
+        .port_config = {
+            .storage_partition_name = "nvs",
+            .netif_queue_size = 10,
+            .task_queue_size = 10,
+        },
+    },
+};
+static SemaphoreHandle_t s_sync;      // given once init is done, and again when the task ends
+static volatile esp_err_t s_init_err;
+
+static void ot_task(void *arg) {
+    (void)arg;
+    s_init_err = esp_openthread_init(&s_config.platform_config);
+    xSemaphoreGive(s_sync);
+    if (s_init_err == ESP_OK) {
+        esp_openthread_launch_mainloop();
+        esp_openthread_deinit();
+    }
+    xSemaphoreGive(s_sync);
+    vTaskDelete(NULL);
+}
+
 // openthread.start(): start the OpenThread task on the board's 802.15.4
 // radio. Starting again does nothing. The network stays down until up(True).
 static mp_obj_t ot_start(void) {
@@ -138,27 +171,32 @@ static mp_obj_t ot_start(void) {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ot_esp_check(err);
     }
-    // ESP-IDF's OpenThread doesn't check that the radio came up: it starts on
-    // one that didn't, and never returns. Bring the radio up once here, so one
-    // that fails raises instead.
+    // ESP-IDF's OpenThread doesn't check that the radio came up, and runs on
+    // one that didn't. Bring the radio up once here, so one that fails raises.
     err = esp_ieee802154_enable();
     esp_ieee802154_disable();
     if (err != ESP_OK) {
         mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("OpenThread: the 802.15.4 radio didn't start (%s)"),
             esp_err_to_name(err));
     }
-    static esp_openthread_config_t config = {
-        .platform_config = {
-            .radio_config = { .radio_mode = RADIO_MODE_NATIVE },
-            .host_config = { .host_connection_mode = HOST_CONNECTION_MODE_NONE },
-            .port_config = {
-                .storage_partition_name = "nvs",
-                .netif_queue_size = 10,
-                .task_queue_size = 10,
-            },
-        },
-    };
-    ot_esp_check(esp_openthread_start(&config));
+    if (s_sync == NULL) {
+        s_sync = xSemaphoreCreateBinary();
+        if (s_sync == NULL) {
+            mp_raise_type(&mp_type_MemoryError);
+        }
+    }
+    if (xTaskCreate(ot_task, CONFIG_OPENTHREAD_TASK_NAME, CONFIG_OPENTHREAD_TASK_SIZE, NULL,
+        CONFIG_OPENTHREAD_TASK_PRIORITY, NULL) != pdPASS) {
+        mp_raise_type(&mp_type_MemoryError);
+    }
+    // Init takes well under a second; ten mean it is stuck.
+    if (xSemaphoreTake(s_sync, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("OpenThread: the stack didn't start in 10 s"));
+    }
+    if (s_init_err != ESP_OK) {
+        xSemaphoreTake(s_sync, portMAX_DELAY);  // the task has ended
+        ot_esp_check(s_init_err);
+    }
     s_started = true;
     return mp_const_none;
 }
@@ -177,7 +215,8 @@ static mp_obj_t ot_stop(void) {
     otThreadSetEnabled(ot, false);
     otIp6SetEnabled(ot, false);
     ot_unlock();
-    ot_esp_check(esp_openthread_stop());
+    ot_esp_check(esp_openthread_mainloop_exit());
+    xSemaphoreTake(s_sync, portMAX_DELAY);  // the task has ended
     s_started = false;
     s_discovering = false;
     return mp_const_none;
