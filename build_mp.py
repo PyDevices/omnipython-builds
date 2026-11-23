@@ -1526,6 +1526,51 @@ def download_copy(mp, name, key):
     return dest
 
 
+def idf_component_copies(idf_name, idf):
+    """deps/<idf name>-components/<component>: a copy of each ESP-IDF component
+    that patches/<idf name>/<component>/ patches, with its series applied as
+    one local commit. The patches are ESP-IDF's own diffs, with paths from its
+    root. A component of the same name in EXTRA_COMPONENT_DIRS replaces
+    ESP-IDF's, so the build compiles the copy."""
+    root = REPO / "patches" / idf_name
+    copies = []
+    for comp in sorted(root.iterdir()) if root.is_dir() else []:
+        patches = sorted(comp.glob("*.patch"))
+        if not patches:
+            continue
+        source = idf / "components" / comp.name
+        if not source.is_dir():
+            die(f"{comp.relative_to(REPO)} patches {comp.name}, but {idf_name} has no such component")
+        digest = hashlib.sha256()
+        for patch in patches:
+            digest.update(patch.read_bytes())
+        sid = "Patch-Series: " + digest.hexdigest()[:16]
+        mark = f"PyDevices patches applied to {idf_name} {pin(idf_name).ref} {comp.name} (a local record, never pushed)"
+        dest = DEPS / f"{idf_name}-components" / comp.name
+        if dest.exists():
+            head = git_out(dest, "log", "-1", "--format=%s%n%b").splitlines()
+            if head[:1] == [mark] and sid in head and not git_out(dest, "status", "--porcelain"):
+                copies.append(dest)
+                continue
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, dest)
+        git = ["git", "-C", str(dest), "-c", "user.name=pydevices", "-c", "user.email=pydevices@local"]
+        run(["git", "init", "-q", str(dest)])
+        run(["git", "-C", str(dest), "config", "core.autocrlf", "false"])
+        run(git + ["add", "-A"])
+        run(git + ["commit", "-q", "-m", f"{idf_name} {comp.name}, as ESP-IDF ships it"])
+        for patch in patches:
+            # -p3 takes a/components/<component>/ off ESP-IDF's paths.
+            if subprocess.run(["git", "-C", str(dest), "apply", "-p3", str(patch)]).returncode != 0:
+                die(f"{patch.relative_to(REPO)} does not apply to {idf_name} {comp.name}")
+            say(f"applied {patch.relative_to(REPO)}")
+        run(git + ["add", "-A"])
+        run(git + ["commit", "-q", "-m", mark, "-m", sid])
+        copies.append(dest)
+    return copies
+
+
 def component_override(shim, copies):
     """The component that points the port's managed components at our copies
     (name: path)."""
@@ -2561,6 +2606,7 @@ def main():
             if args.coredump and not (table and has_coredump_partition(table)):
                 die("--coredump: this board's table has no coredump partition yet, and the dump needs one. "
                     "The ESP32-S3 boards' table has it.")
+            idf_copies = idf_component_copies("esp-idf6" if s31 else "esp-idf", idf)
             for name in COMPONENTS:
                 copy = component_copy(mp, chip, name)
                 if copy:
@@ -2573,7 +2619,7 @@ def main():
                 text, used = esp32_fragment(chip, module_dirs, board, variant, flash, table, args.coredump)
                 frag.write_text(text)
                 shims = [component_override(build / "component_override", copies)] if copies else []
-                esp32_board_dir(gen, base, board, variant, frag, module_dirs, shims)
+                esp32_board_dir(gen, base, board, variant, frag, module_dirs, shims + idf_copies)
                 make_esp = [c for c in make if not c.startswith("BOARD=")] + [f"BOARD={board}", f"BOARD_DIR={gen}"]
                 # A saved sdkconfig beats SDKCONFIG_DEFAULTS; ours is generated.
                 (build / "sdkconfig").unlink(missing_ok=True)

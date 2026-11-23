@@ -33,6 +33,7 @@
 #if CONFIG_OPENTHREAD_ENABLED
 
 #include "esp_heap_caps.h"
+#include "esp_ieee802154.h"
 #include "esp_openthread.h"
 #include "esp_openthread_lock.h"
 #include "esp_openthread_types.h"
@@ -136,6 +137,15 @@ static mp_obj_t ot_start(void) {
     esp_err_t err = esp_vfs_eventfd_register(&eventfd_config);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ot_esp_check(err);
+    }
+    // ESP-IDF's OpenThread doesn't check that the radio came up: it starts on
+    // one that didn't, and never returns. Bring the radio up once here, so one
+    // that fails raises instead.
+    err = esp_ieee802154_enable();
+    esp_ieee802154_disable();
+    if (err != ESP_OK) {
+        mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("OpenThread: the 802.15.4 radio didn't start (%s)"),
+            esp_err_to_name(err));
     }
     static esp_openthread_config_t config = {
         .platform_config = {

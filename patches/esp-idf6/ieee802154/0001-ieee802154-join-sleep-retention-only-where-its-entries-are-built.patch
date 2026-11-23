@@ -1,0 +1,89 @@
+ieee802154: join sleep retention only where its entries are built
+
+ESP-IDF v6.1 (fff9895c82d744c7237be8847347bdd1b07c6643),
+components/ieee802154/driver/esp_ieee802154_dev.c.
+
+The condition: CONFIG_PM_ENABLE=y with CONFIG_FREERTOS_USE_TICKLESS_IDLE
+not set, on a chip with SOC_PM_MODEM_RETENTION_BY_REGDMA (the ESP32-S31).
+MicroPython's esp32 port turns power management on for every board and
+leaves tickless idle off.
+
+ieee802154_sleep_init() runs under CONFIG_PM_ENABLE alone: it initializes,
+allocates and attaches SLEEP_RETENTION_MODULE_802154_MAC. The module's
+create callback, ieee802154_sleep_retention_init(), builds its entries only
+under SOC_PM_MODEM_RETENTION_BY_REGDMA && CONFIG_FREERTOS_USE_TICKLESS_IDLE.
+Without tickless idle it builds none, so the module is never created and
+sleep_retention_module_attach() returns ESP_ERR_INVALID_STATE:
+
+  E ieee802154: ieee802154_sleep_init(1128): ieee802154 sleep retention attach error
+  E ieee802154: ieee802154_mac_init(926): IEEE802154 MAC sleep init failed
+
+esp_ieee802154_enable() then returns ESP_FAIL. esp_openthread_radio_init()
+doesn't check it, so OpenThread starts on a MAC that never came up, and
+esp_openthread_start() never returns.
+
+This gates the init, deinit and create callback on the same condition the
+entries are built under. Without tickless idle the modem is never powered
+down in light sleep, so there is nothing to retain. A build with tickless
+idle is unchanged.
+
+diff --git a/components/ieee802154/driver/esp_ieee802154_dev.c b/components/ieee802154/driver/esp_ieee802154_dev.c
+index b3b7968..0d5b93b 100644
+--- a/components/ieee802154/driver/esp_ieee802154_dev.c
++++ b/components/ieee802154/driver/esp_ieee802154_dev.c
+@@ -1093,7 +1093,13 @@ esp_err_t ieee802154_receive_at(uint32_t time, uint32_t duration)
+     return ESP_OK;
+ }
+ 
+-#if CONFIG_PM_ENABLE
++// The MAC joins sleep retention only where its retention entries are built.
++// Under CONFIG_PM_ENABLE without tickless idle the create callback below
++// makes no entries, the module is never created, and attaching it fails
++// with ESP_ERR_INVALID_STATE, which fails esp_ieee802154_enable().
++#define IEEE802154_MAC_RETENTION (CONFIG_PM_ENABLE && SOC_PM_MODEM_RETENTION_BY_REGDMA && CONFIG_FREERTOS_USE_TICKLESS_IDLE)
++
++#if IEEE802154_MAC_RETENTION
+ static esp_err_t ieee802154_sleep_retention_init(void *arg)
+ {
+     esp_err_t err = ESP_OK;
+@@ -1108,12 +1114,12 @@ static esp_err_t ieee802154_sleep_retention_init(void *arg)
+ #endif
+     return err;
+ }
+-#endif // CONFIG_PM_ENABLE
++#endif // IEEE802154_MAC_RETENTION
+ 
+ static esp_err_t ieee802154_sleep_init(void)
+ {
+     esp_err_t err = ESP_OK;
+-#if CONFIG_PM_ENABLE
++#if IEEE802154_MAC_RETENTION
+     sleep_retention_module_init_param_t init_param = {
+         .cbs = { .create = { .handle = ieee802154_sleep_retention_init, .arg = NULL } },
+         .attribute = SLEEP_RETENTION_MODULE_ATTR_ATTACH
+@@ -1130,14 +1136,14 @@ static esp_err_t ieee802154_sleep_init(void)
+     sleep_modem_register_mac_bb_module_prepare_callback(sleep_modem_mac_bb_power_down_prepare,
+                                                    sleep_modem_mac_bb_power_up_prepare);
+ #endif // SOC_PM_RETENTION_HAS_CLOCK_BUG && CONFIG_MAC_BB_PD
+-#endif // CONFIG_PM_ENABLE
++#endif // IEEE802154_MAC_RETENTION
+     return err;
+ }
+ 
+ static esp_err_t ieee802154_sleep_deinit(void)
+ {
+     esp_err_t err = ESP_OK;
+-#if CONFIG_PM_ENABLE
++#if IEEE802154_MAC_RETENTION
+     err = sleep_retention_module_detach(SLEEP_RETENTION_MODULE_802154_MAC);
+     ESP_RETURN_ON_ERROR(err, IEEE802154_TAG, "ieee802154 sleep retention detach error");
+     err = sleep_retention_module_free(SLEEP_RETENTION_MODULE_802154_MAC);
+@@ -1148,7 +1154,7 @@ static esp_err_t ieee802154_sleep_deinit(void)
+     sleep_modem_unregister_mac_bb_module_prepare_callback(sleep_modem_mac_bb_power_down_prepare,
+                                                      sleep_modem_mac_bb_power_up_prepare);
+ #endif // SOC_PM_RETENTION_HAS_CLOCK_BUG && CONFIG_MAC_BB_PD
+-#endif // CONFIG_PM_ENABLE
++#endif // IEEE802154_MAC_RETENTION
+     return err;
+ }
+ 

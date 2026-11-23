@@ -23,7 +23,7 @@ def start() -> None:
     The network stays down until `up(True)`.
 
     Raises:
-        OSError: the stack couldn't start.
+        OSError: the stack or the 802.15.4 radio couldn't start.
     """
 
 def stop() -> None:

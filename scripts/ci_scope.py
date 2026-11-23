@@ -61,7 +61,7 @@ INERT = (
 CP_COMMON = ("build_mp.py", "DEPENDENCIES.lock", "scripts/pins.py", "patches/circuitpython/**",
              "modules/library.py", "modules/manifest.py", "scripts/ci_scope.py")
 CP_NOT_BUILT = ("patches/micropython/**", "patches/micropython-lib/**", "patches/tinyusb/**",
-                "patches/esp_hosted/**", "patches/apply_patches.py", "modules/*/examples/**", "modules/*/docs/**")
+                "patches/esp_hosted/**", "patches/esp-idf6/**", "patches/apply_patches.py", "modules/*/examples/**", "modules/*/docs/**")
 # The modules the unix-modules job names. The rest (audioif, picotts, tflite,
 # vision, ttfio, audioinstruments, audioeffects, audiocomponents, all) are not in its list.
 UNIX_MODULES = ("displayif", "omnipython", "pdwidgets", "palettes", "pngio", "tsmux", "ppa", "jpegio", "cameraif",

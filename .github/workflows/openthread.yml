@@ -12,6 +12,8 @@ on:
       - '!modules/openthread/*.md'
       - '!modules/openthread/*.pyi'
       - 'patches/micropython-s31/**'
+      - 'patches/esp-idf6/**'
+      - 'tests/test_build_mp.py'
       - 'build_mp.py'
       - 'scripts/pins.py'
       - '.github/workflows/openthread.yml'
@@ -21,6 +23,8 @@ on:
       - '!modules/openthread/*.md'
       - '!modules/openthread/*.pyi'
       - 'patches/micropython-s31/**'
+      - 'patches/esp-idf6/**'
+      - 'tests/test_build_mp.py'
       - 'build_mp.py'
       - 'scripts/pins.py'
       - '.github/workflows/openthread.yml'
@@ -95,3 +99,6 @@ jobs:
           grep -q 'otThreadDiscover' "$map"
           grep -q 'otUdpSend' "$map"
           grep -q 'esp_ieee802154' "$map"
+
+      - name: The 802.15.4 MAC attaches to sleep retention only where its entries are built
+        run: PYTHONPATH=tests python3 -m unittest test_build_mp.Ieee802154Retention -v

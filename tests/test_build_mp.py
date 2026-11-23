@@ -344,6 +344,119 @@ class ManagedComponents(unittest.TestCase):
         self.assertIn("espressif/esp_hosted 2.8.0", str(e.exception))
 
 
+class IdfComponentPatches(unittest.TestCase):
+    """patches/<idf>/<component>/ holds ESP-IDF's own diffs: the build compiles
+    a copy of that component with them applied, named after the component so
+    it replaces ESP-IDF's, and refuses a series for a component ESP-IDF lacks."""
+
+    PATCH = (
+        "diff --git a/components/widget/w.c b/components/widget/w.c\n"
+        "--- a/components/widget/w.c\n"
+        "+++ b/components/widget/w.c\n"
+        "@@ -1 +1 @@\n"
+        "-int w = 1;\n"
+        "+int w = 2;\n"
+    )
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.idf = self.root / "idf"
+        (self.idf / "components" / "widget").mkdir(parents=True)
+        (self.idf / "components" / "widget" / "w.c").write_text("int w = 1;\n")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def _copies(self, component="widget"):
+        series = self.root / "patches" / "esp-idf6" / component
+        series.mkdir(parents=True, exist_ok=True)
+        (series / "0001-w.patch").write_text(self.PATCH.replace("widget", component))
+        lock = build_mp.pins.Pin("esp-idf6", "https://example.invalid/idf.git", A)
+        with mock.patch.object(build_mp, "DEPS", self.root / "deps"), mock.patch.object(build_mp, "REPO", self.root), \
+                mock.patch.object(build_mp, "pin", lambda name: lock), contextlib.redirect_stdout(io.StringIO()):
+            return build_mp.idf_component_copies("esp-idf6", self.idf)
+
+    def test_copy_is_patched_and_named_after_the_component(self):
+        (copy,) = self._copies()
+        self.assertEqual(copy.name, "widget")
+        self.assertEqual((copy / "w.c").read_text(), "int w = 2;\n")
+        self.assertEqual((self.idf / "components" / "widget" / "w.c").read_text(), "int w = 1;\n")
+
+    def test_a_second_build_keeps_the_copy(self):
+        (copy,) = self._copies()
+        (copy / "stamp").write_text("")
+        subprocess.run(["git", "-C", str(copy), "add", "stamp"], check=True)
+        subprocess.run(["git", "-C", str(copy), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--amend", "--no-edit"], check=True)
+        (again,) = self._copies()
+        self.assertTrue((again / "stamp").exists())
+
+    def test_a_component_idf_lacks_is_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            self._copies("gadget")
+        self.assertIn("no such component", str(e.exception))
+
+
+class Ieee802154Retention(unittest.TestCase):
+    """The 802.15.4 MAC may attach to sleep retention only where its retention
+    entries are built. ESP-IDF 6.1 attaches under CONFIG_PM_ENABLE alone but
+    builds the entries only with tickless idle too, so on a MicroPython build
+    (power management on, tickless idle off) esp_ieee802154_enable() fails and
+    OpenThread's start never returns. Checked on ESP-IDF's source with our
+    patches/esp-idf6/ieee802154/ applied, for each setting of the three
+    switches. Needs deps/esp-idf6; the openthread workflow runs it after its build."""
+
+    DRIVER = "driver/esp_ieee802154_dev.c"
+    SWITCHES = ("CONFIG_PM_ENABLE", "SOC_PM_MODEM_RETENTION_BY_REGDMA", "CONFIG_FREERTOS_USE_TICKLESS_IDLE")
+
+    @staticmethod
+    def reachable(text, needle, values):
+        """Whether the line holding needle compiles under values: each enclosing
+        #if, with the file's own one-line #defines expanded."""
+        defines, stack = {}, []
+        for line in text.splitlines():
+            d = line.strip()
+            if d.startswith("#define ") and len(d.split(None, 2)) == 3 and "(" not in d.split(None, 2)[1]:
+                defines[d.split(None, 2)[1]] = d.split(None, 2)[2]
+            elif d.startswith("#if "):
+                stack.append(d[4:])
+            elif d.startswith("#ifdef ") or d.startswith("#ifndef "):
+                stack.append("1")   # none of these guard the retention calls
+            elif d.startswith("#else"):
+                stack[-1] = "!(%s)" % stack[-1]
+            elif d.startswith("#endif"):
+                stack.pop()
+            elif needle in line:
+                return all(Ieee802154Retention.evaluate(c, defines, values) for c in stack)
+        raise AssertionError("%s is not in %s" % (needle, Ieee802154Retention.DRIVER))
+
+    @staticmethod
+    def evaluate(cond, defines, values):
+        cond = cond.split("//")[0]
+        for _ in range(4):
+            for name, body in defines.items():
+                cond = cond.replace(name, "(%s)" % body)
+        expr = cond.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+        names = {n: values.get(n, 0) for n in set(__import__("re").findall(r"[A-Za-z_]\w*", expr))
+                 if n not in ("and", "or", "not")}
+        return bool(eval(expr, {}, names))  # noqa: S307 - a preprocessor line of ESP-IDF's
+
+    def test_attach_only_where_entries_are_built(self):
+        idf = REPO / "deps" / "esp-idf6"
+        if not (idf / "components" / "ieee802154").is_dir():
+            self.skipTest("deps/esp-idf6 is not here: a build of an ESP32-S31 fetches it")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(build_mp, "DEPS", Path(tmp)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            copies = {c.name: c for c in build_mp.idf_component_copies("esp-idf6", idf.resolve())}
+            text = (copies.get("ieee802154", idf / "components" / "ieee802154") / self.DRIVER).read_text()
+        for bits in range(8):
+            values = {name: (bits >> i) & 1 for i, name in enumerate(self.SWITCHES)}
+            attach = self.reachable(text, "sleep_retention_module_attach(SLEEP_RETENTION_MODULE_802154_MAC", values)
+            entries = self.reachable(text, "sleep_retention_entries_create(", values)
+            self.assertFalse(attach and not entries, "attaches with no entries under %s" % values)
+
+
 class Lvgl(unittest.TestCase):
     """omnipython-lvgl comes from DEPENDENCIES.lock: --modules names it lvgl, a build
     takes the port for its interpreter, and the record names the repository."""
