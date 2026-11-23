@@ -235,6 +235,9 @@
   },
   "0078-micropython-esp32-the-usb-host-library-from-the-registry-on-the-p4-and-s31.patch": {
    "sha256": "37b9a1bd5f242068bceeb7bf7e425e8076469197392e72f35014805203cfb9aa"
+  },
+  "0079-micropython-esp32-a-program-picks-the-default-network-interface.patch": {
+   "sha256": "de9eb3cb2096e3ee0527d614758e157ca3a286647e528a3f5c893a9c16af6c6d"
   }
  },
  "tinyusb_patches": {
