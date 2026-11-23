@@ -348,6 +348,18 @@ static void audiopump_wake_make(void) {
 }
 #endif
 
+#if AUDIOIF_DRV_ESP && defined(AUDIODSP_PORT_CEDE)
+// The pump runs above the Bluetooth host (19, 20) and the IPC task on its
+// core, and that is right while it keeps up: each pull is short and then it
+// waits on the DMA. One that can't keep up never waits, and without this the
+// host and IPC never run: bluetooth.BLE().active(True) waits on the IPC task
+// for ever. One tick (the next tick interrupt, at most 10 ms here) gives them
+// the core; the audio is already breaking up when the engine asks for it.
+static void audiopump_cede(void) {
+    vTaskDelay(1);
+}
+#endif
+
 static void audiopump_park_spin(uint32_t max_us) {
     #if AUDIOIF_DRV_ESP
     // Not vTaskDelay(1): this port's tick is 100 Hz, so the shortest delay is
@@ -1689,6 +1701,9 @@ static const audiodsp_port_ops_t audiopump_driver_ops = {
     .stack_free = audiopump_stack_free,
     .park_spin = audiopump_park_spin,
     .sleep_us = audiopump_sleep_us,
+    #if AUDIOIF_DRV_ESP && defined(AUDIODSP_PORT_CEDE)
+    .cede = audiopump_cede,
+    #endif
     #if !AUDIOIF_DRV_ESP
     .sink_open = audiopump_sink_open,
     .sink_close = audiopump_sink_close,
