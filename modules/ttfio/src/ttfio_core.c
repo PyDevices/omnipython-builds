@@ -5,12 +5,16 @@
 // every request is a bump in the font's scratch buffer, reset at the start of
 // each render, so a render allocates nothing from the heap. If the buffer runs
 // out, the allocator jumps back to ttfio_core_render, which reports it; stb
-// never sees a NULL.
+// never sees a NULL. The jump is MicroPython's own nlr, which every port has:
+// the stm32 port links no C library, so it has no setjmp.
 //
 // SPDX-License-Identifier: MIT
 
-#include <setjmp.h>
+#include <math.h>
 #include <string.h>
+
+#include "py/nlr.h"
+#include "py/obj.h"
 
 #include "ttfio_core.h"
 
@@ -19,6 +23,11 @@ static void *ttfio_arena_alloc(size_t n, void *userdata);
 #define STBTT_malloc(x, u) ttfio_arena_alloc((x), (u))
 #define STBTT_free(x, u) ((void)(x), (void)(u))
 #define STBTT_assert(x) ((void)0)
+// stb rounds floats through double floor() and ceil(). The float versions give
+// the same integers, and CircuitPython's RP2040 port wraps the double ones
+// without providing them.
+#define STBTT_ifloor(x) ((int)floorf(x))
+#define STBTT_iceil(x) ((int)ceilf(x))
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 
@@ -50,7 +59,7 @@ static void *ttfio_arena_alloc(size_t n, void *userdata) {
     ttfio_arena_t *a = userdata;
     size_t at = (a->used + 7) & ~(size_t)7;
     if (at > a->size || n > a->size - at) {
-        longjmp(*(jmp_buf *)a->jump, 1);
+        nlr_jump(MP_OBJ_NULL);
     }
     a->used = at + n;
     if (a->used > a->peak) {
@@ -115,11 +124,9 @@ void ttfio_core_glyph(ttfio_font_t *f, int glyph, float px, ttfio_glyph_t *g) {
 }
 
 int ttfio_core_render(ttfio_font_t *f, int glyph, float px, uint8_t *out, int w, int h, int stride) {
-    jmp_buf jump;
+    nlr_buf_t jump;
     f->arena.used = 0;
-    f->arena.jump = &jump;
-    if (setjmp(jump)) {
-        f->arena.jump = NULL;
+    if (nlr_push(&jump) != 0) {
         return -1;
     }
     // stbtt_MakeGlyphBitmap, with TTFIO_FLATNESS for its fixed 0.35 px.
@@ -130,6 +137,6 @@ int ttfio_core_render(ttfio_font_t *f, int glyph, float px, uint8_t *out, int w,
     stbtt_GetGlyphBitmapBox(INFO(f), glyph, s, s, &x0, &y0, NULL, NULL);
     stbtt__bitmap bm = { w, h, stride, out };
     stbtt_Rasterize(&bm, TTFIO_FLATNESS, v, n, s, s, 0, 0, x0, y0, 1, &f->arena);
-    f->arena.jump = NULL;
+    nlr_pop();
     return 0;
 }
