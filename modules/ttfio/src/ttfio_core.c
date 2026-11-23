@@ -10,6 +10,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+#include <math.h>
 #include <string.h>
 
 #include "py/nlr.h"
@@ -22,6 +23,11 @@ static void *ttfio_arena_alloc(size_t n, void *userdata);
 #define STBTT_malloc(x, u) ttfio_arena_alloc((x), (u))
 #define STBTT_free(x, u) ((void)(x), (void)(u))
 #define STBTT_assert(x) ((void)0)
+// stb rounds floats through double floor() and ceil(). The float versions give
+// the same integers, and CircuitPython's RP2040 port wraps the double ones
+// without providing them.
+#define STBTT_ifloor(x) ((int)floorf(x))
+#define STBTT_iceil(x) ((int)ceilf(x))
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 
