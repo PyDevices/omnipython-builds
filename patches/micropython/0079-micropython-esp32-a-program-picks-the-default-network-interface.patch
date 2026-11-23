@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Sun, 23 Nov 2026 00:00:00 -0600
+Subject: [PATCH] esp32: a program picks which network interface is the
+ default, with nic.ipconfig(default=True).
+
+With Wi-Fi and Ethernet both up, ESP-IDF routes everything off-link by the
+interface with the highest route_prio: Wi-Fi's station (100) over Ethernet
+(50). A program had no way to move its traffic to Ethernet short of taking
+Wi-Fi down. nic.ipconfig(default=True) calls esp_netif_set_default_netif(),
+so that interface carries every packet no interface's own subnet claims
+while the others stay up and keep their addresses, and
+nic.ipconfig("default") says whether it is the default.
+
+ESP-IDF holds that choice until another interface is set or this one is
+destroyed (LAN.deinit()), even when its link goes down, so default=False
+has nothing to hand back to and is refused: a program moves the default by
+setting it on the other interface.
+
+The DNS servers stay as they are. lwIP keeps one list for the whole
+stack, written by whichever DHCP lease came last or by
+network.ipconfig(dns=...); a server off every link already follows the new
+default route. Taking the new default's own DHCP servers would need
+CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF on every image, which changes
+what network.ipconfig(dns=...) and ifconfig() report, and clears DNS when
+the interface has none of its own. A program that wants the interface's own
+server sets it with network.ipconfig(dns=...).
+
+The access point no longer restarts its DHCP server when ipconfig() is
+given only keys that leave its address alone.
+---
+diff --git a/docs/library/network.rst b/docs/library/network.rst
+index 3da27e39b..51f738e32 100644
+--- a/docs/library/network.rst
++++ b/docs/library/network.rst
+@@ -125,6 +125,14 @@ parameter should be `id`.
+          to be obtained. To check if an address was obtained, use the read-only
+          property ``has_dhcp4``.
+        * ``gw4`` Get/set the IPv4 default-gateway.
++       * ``default`` (``True``) make this interface the default one: it
++         carries every packet that no interface's own subnet claims, and so
++         the traffic to DNS servers off every link, while the other
++         interfaces stay up. It stays the default until another interface is
++         set, even if its link goes down. The DNS servers don't change; set
++         them with `network.ipconfig` if the new interface needs its own.
++         Reading it says whether this interface is the default. Available on
++         the esp32 port.
+        * ``dhcp6`` (``True/False``) obtain a DNS server via stateless DHCPv6.
+          Obtaining IP Addresses via DHCPv6 is currently not implemented.
+        * ``autoconf6`` (``True/False``) obtain a stateless IPv6 address via
+diff --git a/ports/esp32/network_common.c b/ports/esp32/network_common.c
+index 3866fef4b..8ce7adf9e 100644
+--- a/ports/esp32/network_common.c
++++ b/ports/esp32/network_common.c
+@@ -240,6 +240,9 @@ static mp_obj_t esp_ipconfig(size_t n_args, const mp_obj_t *args, mp_map_t *kwar
+             case MP_QSTR_gw4: {
+                 return netutils_format_ipv4_addr((uint8_t *)&info.gw, NETUTILS_BIG);
+             }
++            case MP_QSTR_default: {
++                return mp_obj_new_bool(self->netif != NULL && esp_netif_get_default_netif() == self->netif);
++            }
+             default: {
+                 mp_raise_ValueError(MP_ERROR_TEXT("unexpected key"));
+                 break;
+@@ -298,6 +301,20 @@ static mp_obj_t esp_ipconfig(size_t n_args, const mp_obj_t *args, mp_map_t *kwar
+                         touched_ip_info = 1;
+                         break;
+                     }
++                    case MP_QSTR_default: {
++                        // This interface carries every packet that no interface's
++                        // own subnet claims, from now until another interface is
++                        // made the default, whatever route_prio says and whether
++                        // or not its link is up. The DNS servers stay as they are.
++                        if (!mp_obj_is_true(e->value)) {
++                            mp_raise_ValueError(MP_ERROR_TEXT("make another interface the default instead"));
++                        }
++                        if (self->netif == NULL) {
++                            mp_raise_OSError(MP_ENODEV);
++                        }
++                        esp_exceptions(esp_netif_set_default_netif(self->netif));
++                        break;
++                    }
+                     default: {
+                         mp_raise_ValueError(MP_ERROR_TEXT("unexpected key"));
+                         break;
+@@ -313,7 +330,7 @@ static mp_obj_t esp_ipconfig(size_t n_args, const mp_obj_t *args, mp_map_t *kwar
+                 }
+                 esp_exceptions(esp_netif_set_ip_info(self->netif, &info));
+             }
+-        } else if (self->if_id == ESP_IF_WIFI_AP) {
++        } else if (self->if_id == ESP_IF_WIFI_AP && touched_ip_info) {
+             esp_err_t e = esp_netif_dhcps_stop(self->netif);
+             if (e != ESP_OK && e != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+                 esp_exceptions_helper(e);
+-- 
+2.43.0
+
