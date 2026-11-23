@@ -1,0 +1,3 @@
+Opt-in: name openthread to build it; --modules all leaves it out.
+It turns on the ESP32-S31's 802.15.4 radio and ESP-IDF's OpenThread, which
+add about 60 KB to the image and 16 KB of internal RAM.
