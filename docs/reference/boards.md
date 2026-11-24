@@ -23,6 +23,7 @@ top. Add `--modules` to any of these:
 | Adafruit QT Py ESP32-S3 that has 2 MB of PSRAM, WT32-SC01 Plus, Unexpected Maker FeatherS3 and other S3 boards with quad PSRAM | `--port esp32 --board ESP32_GENERIC_S3 --flash 8MB`; every release carries this image, and a board with more flash runs it too |
 | An S3 board with no PSRAM, such as the QT Py ESP32-S3 that has none | `--port esp32 --board ESP32_GENERIC_S3 --variant NO_PSRAM --flash 8MB --modules omnipython,displayif,pygraphics,pngio,palettes,iconkit,svgio,mdns,jpegio,ulab`; every release carries this image |
 | Adafruit QT Py ESP32 Pico (8 MB flash, 2 MB PSRAM), CPU at 240 MHz, flash and PSRAM at 80 MHz | `--port esp32 --board ESP32_GENERIC --variant QTPY_PICO --flash 8MB` (write the bootloader with the app) |
+| Seeed Studio XIAO ESP32C5 (8 MB flash, 8 MB PSRAM) | `--port esp32 --board SEEED_XIAO_ESP32C5 --flash 8MB`; with `--modules all` the app takes a 5,824 KB slot, which leaves a 2,304 KB filesystem at 0x5c0000. Write `firmware.bin` at 0x2000, where the C5's bootloader goes |
 | Raspberry Pi Pico (RP2040) | `--port rp2 --board RPI_PICO` (not `--modules all`: [it doesn't fit](../guides/fit-firmware-on-a-small-flash.md)) |
 | Raspberry Pi Pico 2 (RP2350) | `--port rp2 --board RPI_PICO2` |
 | Pimoroni Pico Plus 2 W (16 MB flash, 8 MB PSRAM, 48 GPIOs) | `--port rp2 --board RPI_PICO2_W --variant PIMORONI_PICO_PLUS2_W` |
@@ -31,7 +32,7 @@ top. Add `--modules` to any of these:
 | Arduino GIGA R1 WiFi with the GIGA Display Shield | `--port stm32 --board ARDUINO_GIGA --variant DISPLAY_SHIELD --modules displayif,lvgl` ([three images to flash](../guides/flash-a-board.md#stm32-arduino-giga-r1-wifi)) |
 
 Every ESP32 board here runs its CPU at the chip's rated clock (240 MHz on an
-ESP32 or S3; 400 on a P4 of revision 3 or later, 360 before that; 320 on an
+ESP32, S3 or C5; 400 on a P4 of revision 3 or later, 360 before that; 320 on an
 S31), and its
 flash and PSRAM at the fastest clock its chips are rated for: 80 MHz or more,
 except the flash of a P4 image for revisions before 3, which ESP-IDF holds to

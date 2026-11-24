@@ -25,4 +25,8 @@ if(ESP_PLATFORM AND IDF_TARGET STREQUAL "esp32p4")
     target_link_libraries(usermod_h264enc INTERFACE idf::espressif__esp_h264
         idf::esp_timer)
     target_link_libraries(usermod INTERFACE usermod_h264enc)
+elseif(ESP_PLATFORM)
+    message(STATUS
+        "h264enc: skipped -- builds only on the ESP32-P4. "
+        "The firmware builds without the h264enc module.")
 endif()
