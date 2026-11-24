@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Mon, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] esp32: the heap leaves room in PSRAM for TLS and the network.
+
+The esp32 port's heap grows on demand. When an allocation fails after a
+collection, gc_try_add_heap() adds an area as big as the whole heap so far,
+capped only by gc_get_max_new_split(), which was ESP-IDF's largest free
+block. On an S3 with 8 MB of PSRAM, the step after a 4 MB heap took all of
+the PSRAM that was left, and an area goes back to ESP-IDF only when nothing
+at all lives in it. Builds that give mbedTLS PSRAM only
+(CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC), or move Wi-Fi and lwIP buffers there,
+then had nowhere to put a TLS session: an HTTPS request failed with
+gc.mem_free() reporting megabytes free.
+
+gc_get_max_new_split() now also stops short of the last
+MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE bytes of free PSRAM, 256 KB unless a
+board sets its own (0 turns it off). Builds without PSRAM are unchanged.
+With PSRAM, the heap no longer grows into internal RAM once PSRAM is down
+to the reserve, which keeps that RAM for DMA buffers and task stacks;
+gc.mem_free() counts the reserve as not free.
+
+On a Waveshare ESP32-S3-Touch-LCD-7 (8 MB octal PSRAM), filling the heap
+with 4 KB objects and freeing 31 of every 32 left 33 KB of PSRAM, and the
+next TLS handshake failed. With this change the same run grows the heap to
+6.4 MB, leaves 210 KB of PSRAM free, and the handshake succeeds; three TLS
+sessions held open at once on top of it left 87 KB.
+---
+diff --git a/ports/esp32/gccollect.c b/ports/esp32/gccollect.c
+index e6c17fda6..f9aa690ef 100644
+--- a/ports/esp32/gccollect.c
++++ b/ports/esp32/gccollect.c
+@@ -80,9 +80,22 @@ void gc_collect(void) {
+ #if MICROPY_GC_SPLIT_HEAP_AUTO
+ 
+ // The largest new region that is available to become Python heap is the largest
+-// free block in the ESP-IDF system heap.
++// free block in the ESP-IDF system heap. With PSRAM, it is also no more than
++// leaves MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE of PSRAM free, so the heap can't
++// take the room ESP-IDF allocates from there.
+ size_t gc_get_max_new_split(void) {
+-    return heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
++    size_t avail = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
++    #if CONFIG_SPIRAM && MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE > 0
++    size_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
++    size_t spiram_avail = 0;
++    if (spiram_free > MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE) {
++        spiram_avail = spiram_free - MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE;
++    }
++    if (avail > spiram_avail) {
++        avail = spiram_avail;
++    }
++    #endif
++    return avail;
+ }
+ 
+ #endif
+diff --git a/ports/esp32/mpconfigport.h b/ports/esp32/mpconfigport.h
+index 1243955a2..b41d75aea 100644
+--- a/ports/esp32/mpconfigport.h
++++ b/ports/esp32/mpconfigport.h
+@@ -103,6 +103,14 @@
+ #define MICROPY_GC_SPLIT_HEAP               (1)
+ #define MICROPY_GC_SPLIT_HEAP_AUTO          (1)
+ 
++// PSRAM that the Python heap never grows into, kept for ESP-IDF's own
++// allocations there: mbedTLS sessions, and Wi-Fi, lwIP and Bluetooth buffers
++// on boards that move them to PSRAM. Without it, the heap's growth step can
++// take all of the PSRAM that is left. A board can set its own, or 0 for none.
++#ifndef MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE
++#define MICROPY_GC_SPLIT_HEAP_SPIRAM_RESERVE (256 * 1024)
++#endif
++
+ // extended modules
+ #ifndef MICROPY_PY_ESPNOW
+ #define MICROPY_PY_ESPNOW                   (1)
