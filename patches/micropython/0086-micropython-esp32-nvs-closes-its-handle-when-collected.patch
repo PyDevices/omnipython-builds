@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] esp32/esp32_nvs: an NVS object closes its handle when it's
+ collected.
+
+esp32.NVS(namespace) opened an NVS handle and nothing ever closed it: not
+the object being collected, and not a soft reset. Each open handle holds
+two small blocks of internal RAM (20 bytes each on an ESP32-P4), so code
+that opens a namespace for each read leaks them for as long as the board
+runs. The NVS object is now allocated with a finaliser, and its __del__
+closes the handle, so a collection or a soft reset gives the blocks back.
+
+On an ESP32-P4 (pre revision 3, 256 KB L2 cache) the libraries open about
+50 handles each time their home screen starts. Over a day of soft resets
+those blocks were left scattered through internal RAM, splitting its
+largest free piece until the H.264 encoder's 51,840-byte block no longer
+fitted and a cast couldn't start.
+
+Based-on: micropython b70ae1aca (v1.30.0-preview-160)
+---
+ ports/esp32/esp32_nvs.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/ports/esp32/esp32_nvs.c b/ports/esp32/esp32_nvs.c
+--- a/ports/esp32/esp32_nvs.c
++++ b/ports/esp32/esp32_nvs.c
+@@ -40,12 +40,16 @@
+ typedef struct _esp32_nvs_obj_t {
+     mp_obj_base_t base;
+     nvs_handle_t namespace;
++    bool open;
+ } esp32_nvs_obj_t;
+ 
+ // *esp32_nvs_new allocates a python NVS object given a handle to an esp-idf namespace C obj.
++// Its finaliser closes the handle: each open handle holds a few small blocks of internal RAM,
++// and nothing else ever closes it, not even a soft reset.
+ static esp32_nvs_obj_t *esp32_nvs_new(nvs_handle_t namespace) {
+-    esp32_nvs_obj_t *self = mp_obj_malloc(esp32_nvs_obj_t, &esp32_nvs_type);
++    esp32_nvs_obj_t *self = mp_obj_malloc_with_finaliser(esp32_nvs_obj_t, &esp32_nvs_type);
+     self->namespace = namespace;
++    self->open = true;
+     return self;
+ }
+ 
+@@ -131,7 +135,19 @@
+ }
+ static MP_DEFINE_CONST_FUN_OBJ_1(esp32_nvs_commit_obj, esp32_nvs_commit);
+ 
++// esp32_nvs_del closes the namespace's handle when the object is collected, or at a soft reset.
++static mp_obj_t esp32_nvs_del(mp_obj_t self_in) {
++    esp32_nvs_obj_t *self = MP_OBJ_TO_PTR(self_in);
++    if (self->open) {
++        self->open = false;
++        nvs_close(self->namespace);
++    }
++    return mp_const_none;
++}
++static MP_DEFINE_CONST_FUN_OBJ_1(esp32_nvs_del_obj, esp32_nvs_del);
++
+ static const mp_rom_map_elem_t esp32_nvs_locals_dict_table[] = {
++    { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&esp32_nvs_del_obj) },
+     { MP_ROM_QSTR(MP_QSTR_get_i32), MP_ROM_PTR(&esp32_nvs_get_i32_obj) },
+     { MP_ROM_QSTR(MP_QSTR_set_i32), MP_ROM_PTR(&esp32_nvs_set_i32_obj) },
+     { MP_ROM_QSTR(MP_QSTR_get_blob), MP_ROM_PTR(&esp32_nvs_get_blob_obj) },
+-- 
+2.43.0
+
