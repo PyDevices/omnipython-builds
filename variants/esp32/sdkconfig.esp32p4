@@ -51,3 +51,10 @@ CONFIG_FREERTOS_HZ=1000
 # IDF leaves the cache and the scheduler running during a flash operation.
 # It costs PSRAM the size of the firmware (9 MB of 32 with every module).
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# More lwIP sockets, as the S3 builds have. A Miracast cast holds six (the
+# MICE control socket, the RTSP listener and its client, the UIBC listener and
+# its client, and the stream), and WebREPL and an app's own servers need more:
+# with the default 10, an app's server refused new clients with ENFILE while a
+# cast ran (omnipython#792). Each socket is a few hundred bytes.
+CONFIG_LWIP_MAX_SOCKETS=16
