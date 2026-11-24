@@ -261,7 +261,7 @@ ordinary user C module, so a stock MicroPython esp32 build takes it with
 `USER_C_MODULES`. Two settings go with it: [`sdkconfig.esp32`](sdkconfig.esp32)
 in the board's `SDKCONFIG_DEFAULTS` turns Bluedroid, A2DP, AVRCP cover art, HID and
 HFP on, and `micropython.cmake` puts the `bluetooth` module on Bluedroid
-([`src/modbluetooth_bluedroid.c`](src/modbluetooth_bluedroid.c)), with two
+([`src/modbluetooth_bluedroid.c`](src/modbluetooth_bluedroid.c)), with three
 small MicroPython patches in [`patches/`](patches). `build.py` does the
 first for you.
 
@@ -272,6 +272,9 @@ both roles, the GATT server and client, and pairing. Where it differs:
 
 - `_IRQ_GATTS_READ_REQUEST` can't refuse a read. Events reach Python through
   the scheduler, never on the Bluetooth task, which also decodes audio.
+- Each `_IRQ_GATTS_WRITE` handler reads its own write with `gatts_read()`,
+  even when more writes have arrived since: a write waits in the event queue
+  with its bytes, and becomes the value just before its handler runs.
 - Bonds live in NVS, kept by Bluedroid, so `_IRQ_GET_SECRET` and
   `_IRQ_SET_SECRET` never fire.
 - The client hears notifications from characteristics it discovered (up to

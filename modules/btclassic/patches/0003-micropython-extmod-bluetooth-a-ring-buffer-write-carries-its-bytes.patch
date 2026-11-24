@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] extmod/modbluetooth: a ring-buffer write event carries the
+ bytes written.
+
+With ring-buffer events, _IRQ_GATTS_WRITE names only the value handle, and
+the handler reads the value with gatts_read() when it runs from the
+scheduler. If a second write to the same characteristic arrives first, it
+has already replaced the value, so the handler for the first write reads
+the second one, and both handlers see the later write.
+
+A backend that sets MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA calls
+mp_bluetooth_gatts_on_write_data() instead: the bytes go into the ring
+buffer with the event, and are stored as the value, through the backend's
+mp_bluetooth_gatts_store_write(), just before that event's handler runs.
+Each handler then reads its own write, and once every event has run the
+value is the last write, as before.
+
+Inert unless the macro is set: every existing port builds as before.
+
+Based-on: micropython b70ae1aca (v1.30.0-preview)
+---
+--- a/extmod/modbluetooth.c
++++ b/extmod/modbluetooth.c
+@@ -1080,6 +1080,10 @@
+ 
+         mp_obj_t handler = handler = o->irq_handler;
+         mp_obj_tuple_t *data_tuple = MP_OBJ_TO_PTR(o->irq_data_tuple);
++        #if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++        mp_uint_t write_len = 0xffff;
++        uint16_t write_handle = 0;
++        #endif
+ 
+         if (event == MP_BLUETOOTH_IRQ_CENTRAL_CONNECT || event == MP_BLUETOOTH_IRQ_PERIPHERAL_CONNECT || event == MP_BLUETOOTH_IRQ_CENTRAL_DISCONNECT || event == MP_BLUETOOTH_IRQ_PERIPHERAL_DISCONNECT) {
+             // conn_handle, addr_type, addr
+@@ -1090,6 +1094,17 @@
+         } else if (event == MP_BLUETOOTH_IRQ_GATTS_WRITE) {
+             // conn_handle, value_handle
+             ringbuf_extract(&o->ringbuf, data_tuple, 2, 0, NULL, 0, NULL, NULL);
++            #if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++            // Then the written bytes, or 0xffff where the value was stored
++            // when it arrived.
++            write_len = ringbuf_get16(&o->ringbuf);
++            if (write_len != 0xffff) {
++                write_handle = MP_OBJ_SMALL_INT_VALUE(data_tuple->items[1]);
++                for (size_t i = 0; i < write_len; ++i) {
++                    ((uint8_t *)o->irq_data_data.items)[i] = ringbuf_get(&o->ringbuf);
++                }
++            }
++            #endif
+         } else if (event == MP_BLUETOOTH_IRQ_GATTS_INDICATE_DONE) {
+             // conn_handle, value_handle, status
+             ringbuf_extract(&o->ringbuf, data_tuple, 2, 1, NULL, 0, NULL, NULL);
+@@ -1139,6 +1154,12 @@
+ 
+         MICROPY_PY_BLUETOOTH_EXIT
+ 
++        #if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++        if (write_len != 0xffff) {
++            mp_bluetooth_gatts_store_write(write_handle, o->irq_data_data.items, write_len);
++        }
++        #endif
++
+         mp_call_function_2(handler, MP_OBJ_NEW_SMALL_INT(event), MP_OBJ_FROM_PTR(data_tuple));
+     }
+ 
+@@ -1544,13 +1565,43 @@
+ void mp_bluetooth_gatts_on_write(uint16_t conn_handle, uint16_t value_handle) {
+     MICROPY_PY_BLUETOOTH_ENTER
+     mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
++    #if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++    if (enqueue_irq(o, 2 + 2 + 2, MP_BLUETOOTH_IRQ_GATTS_WRITE)) {
++        ringbuf_put16(&o->ringbuf, conn_handle);
++        ringbuf_put16(&o->ringbuf, value_handle);
++        ringbuf_put16(&o->ringbuf, 0xffff);
++    }
++    #else
+     if (enqueue_irq(o, 2 + 2, MP_BLUETOOTH_IRQ_GATTS_WRITE)) {
+         ringbuf_put16(&o->ringbuf, conn_handle);
+         ringbuf_put16(&o->ringbuf, value_handle);
+     }
++    #endif
+     schedule_ringbuf(atomic_state);
+ }
+ 
++#if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++bool mp_bluetooth_gatts_on_write_data(uint16_t conn_handle, uint16_t value_handle, const uint8_t *data, size_t len) {
++    MICROPY_PY_BLUETOOTH_ENTER
++    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
++    // invoke_irq copies the bytes into irq_data_data, so no more than that.
++    bool queued = o && len < 0xffff && len <= o->irq_data_data_alloc
++        && enqueue_irq(o, 2 + 2 + 2 + len, MP_BLUETOOTH_IRQ_GATTS_WRITE);
++    if (queued) {
++        ringbuf_put16(&o->ringbuf, conn_handle);
++        ringbuf_put16(&o->ringbuf, value_handle);
++        ringbuf_put16(&o->ringbuf, len);
++        for (size_t i = 0; i < len; ++i) {
++            ringbuf_put(&o->ringbuf, data[i]);
++        }
++        schedule_ringbuf(atomic_state);
++    } else {
++        MICROPY_PY_BLUETOOTH_EXIT
++    }
++    return queued;
++}
++#endif
++
+ void mp_bluetooth_gatts_on_indicate_complete(uint16_t conn_handle, uint16_t value_handle, uint8_t status) {
+     MICROPY_PY_BLUETOOTH_ENTER
+     mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+--- a/extmod/modbluetooth.h
++++ b/extmod/modbluetooth.h
+@@ -436,6 +436,20 @@
+ // Call this when a characteristic is written to.
+ void mp_bluetooth_gatts_on_write(uint16_t conn_handle, uint16_t value_handle);
+ 
++#if MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA
++// Call this, instead of storing the value and calling
++// mp_bluetooth_gatts_on_write, when a characteristic is written to and
++// events wait in the ring buffer. The bytes go into the ring buffer with
++// the event and are stored, through mp_bluetooth_gatts_store_write, just
++// before the event's handler runs, so the handler reads this write's value
++// even when another write has come in since. False if the event couldn't
++// be queued (no handler, or no room): then store the value at once.
++bool mp_bluetooth_gatts_on_write_data(uint16_t conn_handle, uint16_t value_handle, const uint8_t *data, size_t len);
++
++// Implemented by the backend: store a client's write as the value.
++void mp_bluetooth_gatts_store_write(uint16_t value_handle, const uint8_t *data, size_t len);
++#endif
++
+ // Call this when an acknowledgment is received for an indication.
+ void mp_bluetooth_gatts_on_indicate_complete(uint16_t conn_handle, uint16_t value_handle, uint8_t status);
+ 

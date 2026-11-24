@@ -265,6 +265,30 @@ static bool db_store(uint16_t handle, const uint8_t *value, size_t len) {
     return ok;
 }
 
+static bool db_has(uint16_t handle) {
+    MICROPY_PY_BLUETOOTH_ENTER
+    bool has = MP_STATE_PORT(bluetooth_bluedroid_root_pointers)
+        && mp_bluetooth_gatts_db_lookup(DB(), handle) != NULL;
+    MICROPY_PY_BLUETOOTH_EXIT
+    return has;
+}
+
+// extmod stores a write's bytes from the ring buffer just before the
+// write's event runs Python, so the handler reads that write and not a
+// later one (MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA).
+void mp_bluetooth_gatts_store_write(uint16_t value_handle, const uint8_t *data, size_t len) {
+    db_store(value_handle, data, len);
+}
+
+// A client's write: queued with its event, or, when it can't be (no IRQ
+// handler, or the ring buffer is full), stored at once as before.
+static void on_write_value(uint16_t conn_id, uint16_t handle, const uint8_t *value, size_t len) {
+    if (!mp_bluetooth_gatts_on_write_data(conn_id, handle, value, len)) {
+        db_store(handle, value, len);
+        mp_bluetooth_gatts_on_write(conn_id, handle);
+    }
+}
+
 // ---- callbacks, on Bluedroid's task ----
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
@@ -418,14 +442,14 @@ static void on_write(struct gatts_write_evt_param *wr) {
         }
     } else if (wr->offset != 0) {
         status = ESP_GATT_INVALID_OFFSET;
-    } else if (!db_store(wr->handle, wr->value, wr->len)) {
+    } else if (!db_has(wr->handle)) {
         status = ESP_GATT_INVALID_HANDLE;
     }
     if (wr->need_rsp) {
         respond(wr->conn_id, wr->trans_id, wr->handle, status, NULL, 0, 0);
     }
     if (!cc && status == ESP_GATT_OK) {
-        mp_bluetooth_gatts_on_write(wr->conn_id, wr->handle);
+        on_write_value(wr->conn_id, wr->handle, wr->value, wr->len);
     }
 }
 
@@ -501,17 +525,15 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
         case ESP_GATTS_EXEC_WRITE_EVT: {
             esp_gatt_status_t status = ESP_GATT_OK;
             uint16_t handle = b.prep_handle;
-            if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && handle) {
-                if (!db_store(handle, b.prep, b.prep_len)) {
-                    status = ESP_GATT_INVALID_HANDLE;
-                }
+            if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && handle && !db_has(handle)) {
+                status = ESP_GATT_INVALID_HANDLE;
+            }
+            respond(param->exec_write.conn_id, param->exec_write.trans_id, handle, status, NULL, 0, 0);
+            if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && handle && status == ESP_GATT_OK) {
+                on_write_value(param->exec_write.conn_id, handle, b.prep, b.prep_len);
             }
             b.prep_handle = 0;
             b.prep_len = 0;
-            respond(param->exec_write.conn_id, param->exec_write.trans_id, handle, status, NULL, 0, 0);
-            if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && handle && status == ESP_GATT_OK) {
-                mp_bluetooth_gatts_on_write(param->exec_write.conn_id, handle);
-            }
             break;
         }
         case ESP_GATTS_CONF_EVT: {

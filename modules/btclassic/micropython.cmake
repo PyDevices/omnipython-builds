@@ -113,14 +113,17 @@ if(ESP_PLATFORM AND (IDF_TARGET STREQUAL "esp32" OR IDF_TARGET STREQUAL "esp32s3
     list(APPEND MICROPY_DEF_BOARD MICROPY_BLUETOOTH_BLUEDROID=1)
     # The backend's roles: central and the GATT client as well as the
     # peripheral and server. Events queue for the scheduler, so the queue is
-    # bigger than upstream's 128 bytes: a discovery's results come in a burst.
+    # bigger than upstream's 128 bytes: a discovery's results come in a burst,
+    # and each write from a client waits there with its bytes (patches/), so
+    # a burst of full-MTU writes fits too.
     # Pairing too: Bluedroid keeps the bonds itself (patches/ lets upstream's
     # module pair without synchronous events when the backend does that).
     list(APPEND MICROPY_DEF_BOARD
         MICROPY_PY_BLUETOOTH_ENABLE_CENTRAL_MODE=1
         MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING=1
         MICROPY_PY_BLUETOOTH_BACKEND_STORES_KEYS=1
-        MICROPY_PY_BLUETOOTH_RINGBUF_SIZE=1024)
+        MICROPY_PY_BLUETOOTH_GATTS_WRITE_CARRIES_DATA=1
+        MICROPY_PY_BLUETOOTH_RINGBUF_SIZE=4096)
     # Through MICROPY_DEF_BOARD, so the qstr scan sees the HID and phone entries too.
     list(APPEND MICROPY_DEF_BOARD BTC_HAS_HID=1 BTC_HAS_PHONEBOOK=1 BTC_HAS_GATEWAY=1
         BTC_HAS_MESSAGES=1)
