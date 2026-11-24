@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Mon, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] esp32/network_lan: build with the Ethernet MAC turned off.
+
+network.LAN tested the chip, ESP32 or ESP32-P4, to decide whether to
+compile the code for the chip's own Ethernet MAC and its RMII PHYs. A
+board whose RMII pins are wired to something else, such as an audio
+codec, can turn the MAC off with CONFIG_ETH_USE_ESP32_EMAC=n and keep
+the SPI Ethernet chips, but then the build failed to link: ESP-IDF
+leaves out the MAC and the RMII PHY drivers, and network_lan.c still
+called them.
+
+Those blocks now follow CONFIG_ETH_USE_ESP32_EMAC, which is on by default
+on both chips, so every build that has the MAC compiles as before.
+Without it, LAN() with an RMII PHY type raises ValueError, and the SPI
+chips work as they did.
+
+---
+diff --git a/ports/esp32/network_lan.c b/ports/esp32/network_lan.c
+index 336802cb9..85b42aca6 100644
+--- a/ports/esp32/network_lan.c
++++ b/ports/esp32/network_lan.c
+@@ -248,14 +248,26 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+         mp_raise_ValueError(MP_ERROR_TEXT("invalid phy type"));
+     }
+ 
++    #if !CONFIG_ETH_USE_ESP32_EMAC
++    // A firmware built without the chip's own Ethernet MAC drives only SPI
++    // Ethernet chips: an RMII PHY has nothing to talk to.
++    if (!IS_SPI_PHY(args[ARG_phy_type].u_int)
++        #if CONFIG_ETH_USE_OPENETH
++        && args[ARG_phy_type].u_int != PHY_OPENETH
++        #endif
++        ) {
++        mp_raise_ValueError(MP_ERROR_TEXT("this firmware has no Ethernet MAC; use an SPI PHY"));
++    }
++    #endif
++
+     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+-    #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
++    #if CONFIG_ETH_USE_ESP32_EMAC
+     eth_esp32_emac_config_t esp32_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
+     #endif
+ 
+     esp_eth_mac_t *mac = NULL;
+ 
+-    #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
++    #if CONFIG_ETH_USE_ESP32_EMAC
+     // Dynamic ref_clk configuration.
+     if (args[ARG_ref_clk_mode].u_int != -1) {
+         // Map the GPIO_MODE constants to EMAC_CLK constants.
+@@ -290,7 +302,7 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+     #endif
+ 
+     switch (args[ARG_phy_type].u_int) {
+-        #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
++        #if CONFIG_ETH_USE_ESP32_EMAC
+         case PHY_LAN8710:
+         case PHY_LAN8720:
+             self->phy = esp_eth_phy_new_lan87xx(&phy_config);
+@@ -318,7 +330,7 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+             self->phy = esp_eth_phy_new_generic(&phy_config);
+             break;
+         #endif
+-        #endif // CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
++        #endif // CONFIG_ETH_USE_ESP32_EMAC
+         #if CONFIG_ETH_USE_OPENETH
+         case PHY_OPENETH:
+             phy_config.autonego_timeout_ms = 100;
+@@ -360,7 +372,7 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+         #endif
+     }
+ 
+-    #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
++    #if CONFIG_ETH_USE_ESP32_EMAC
+     if (!IS_SPI_PHY(args[ARG_phy_type].u_int)) {
+         if (self->mdc_pin == -1 || self->mdio_pin == -1) {
+             mp_raise_ValueError(MP_ERROR_TEXT("mdc and mdio must be specified"));
