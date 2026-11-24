@@ -15,6 +15,10 @@ import os
 include("../library.py")
 require("omnipython", library="omnipython-lib", opt=3)
 require("bledev", library="omnipython-lib", opt=3)
+# endpointkit, which audiodev's Bluetooth and USB providers and displaydev's
+# endpoints import: without it a board that doesn't build usbhost (whose
+# packages bring it) can't list a Bluetooth speaker under audio out.
+require("endpointkit", library="omnipython-lib", opt=3)
 # MIDI ports for a program or app: UART, USB device and host, Bluetooth LE.
 # Frozen where the image has room for them, a flash of 8 MB or more as
 # --flash gives it; a smaller board installs midiports with omip.
