@@ -11,8 +11,9 @@ Which device classes the packages drive, and which boards run them, are in
 The controller's
 FIFO split is fixed when the host starts, so `usb.core.start(classes=...)` chooses it
 from what was asked for (`uvc` leans IN; `uac` without `uvc` makes room for a
-speaker that declares packets of up to 384 bytes on the S2/S3, as 48 kHz
-stereo dongles do, and a microphone's; otherwise the board's Kconfig
+speaker that declares packets of up to 400 bytes on the S2/S3, as 48 kHz
+stereo dongles do (384, or 388 for one that also offers 96 kHz), and a
+microphone's of up to 328; otherwise the board's Kconfig
 bias), and a camera and a USB Audio 2.0 speaker cannot share one `start()`.
 An endpoint bigger than the split takes is refused with `OSError` E2BIG,
 and the host prints the split's limits;
