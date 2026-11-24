@@ -33,7 +33,8 @@ for _pkg in (
 # packages, which install there, can't be added with mip on this firmware.
 # They go in with it: the device classes always (they need only usb.device),
 # and usb.core with the host classes when the build carries usbhost, whose
-# _usbhost they run on.
+# _usbhost they run on. usb-host-endpoints brings endpointkit with it: it is
+# what lets an app find a keyboard or speaker on the host port by kind.
 import os
 
 include("../library.py")
@@ -52,5 +53,6 @@ if any(n in ("all", "usbhost") or os.path.realpath(n) == _usbhost for n in _name
         "usb-host-cdc",
         "usb-host-mtp",
         "usb-host-dfu",
+        "usb-host-endpoints",
     ):
         require(_pkg, library="omnipython-lib")
