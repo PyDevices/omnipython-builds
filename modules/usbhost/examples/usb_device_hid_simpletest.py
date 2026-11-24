@@ -3,18 +3,17 @@
 # SPDX-License-Identifier: MIT
 """Type a short string into the computer as a USB keyboard.
 
-The board presents itself as a keyboard. ``usb_hid`` (our package over
+The board presents itself as a keyboard. ``usb_hid`` (OmniPython's, over
 micropython-lib's ``usb-device-hid``) gives the same ``devices`` that
 CircuitPython's does, so Adafruit's ``adafruit_hid`` code runs unchanged.
 Any operating system accepts it with no driver. After typing, the program
 prints the Caps Lock state the computer last set, read from the keyboard's
 LED report. Success is the greeting appearing in whatever text box has focus.
 
-Needs: a board with USB device support and the ``usb-hid`` and
-``adafruit_hid`` packages. Install them with ``mip`` if your firmware
-doesn't freeze them:
+Needs: a board with USB device support, OmniPython (which holds ``usb_hid``)
+and the ``adafruit_hid`` package. Install adafruit_hid with ``mip`` if your
+firmware doesn't freeze it:
 
-    mip.install("github:PyDevices/omnipython/packages/usb/usb-hid")
     mip.install("github:PyDevices/omnipython/bledev_hid")
 
 Run it:

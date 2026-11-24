@@ -8,11 +8,10 @@ The board presents itself as a mouse. ``usb_hid`` gives CircuitPython's
 code runs on CircuitPython. Success is the pointer moving 80 pixels right
 and back, and the program printing that it did.
 
-Needs: a board with USB device support and the ``usb-hid`` and
-``adafruit_hid`` packages. Install them with ``mip`` if your firmware
-doesn't freeze them:
+Needs: a board with USB device support, OmniPython (which holds ``usb_hid``)
+and the ``adafruit_hid`` package. Install adafruit_hid with ``mip`` if your
+firmware doesn't freeze it:
 
-    mip.install("github:PyDevices/omnipython/packages/usb/usb-hid")
     mip.install("github:PyDevices/omnipython/bledev_hid")
 
 Run it:
