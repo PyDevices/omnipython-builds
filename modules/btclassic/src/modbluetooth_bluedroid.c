@@ -470,13 +470,18 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
     }
     switch (event) {
         case ESP_GATTS_CREAT_ATTR_TAB_EVT: {
-            uint16_t n = param->add_attr_tab.num_handle;
-            if (n > MP_ARRAY_SIZE(b.tab_handles)) {
-                n = MP_ARRAY_SIZE(b.tab_handles);
+            // A table that wasn't created arrives with handles NULL, so
+            // copy them only on success.
+            uint16_t n = 0;
+            if (param->add_attr_tab.status == ESP_GATT_OK && param->add_attr_tab.handles) {
+                n = param->add_attr_tab.num_handle;
+                if (n > MP_ARRAY_SIZE(b.tab_handles)) {
+                    n = MP_ARRAY_SIZE(b.tab_handles);
+                }
+                memcpy(b.tab_handles, param->add_attr_tab.handles, n * sizeof(uint16_t));
             }
-            memcpy(b.tab_handles, param->add_attr_tab.handles, n * sizeof(uint16_t));
             b.tab_n = n;
-            b.tab = param->add_attr_tab.status == ESP_GATT_OK ? 1 : -1;
+            b.tab = n ? 1 : -1;
             break;
         }
         case ESP_GATTS_START_EVT:
