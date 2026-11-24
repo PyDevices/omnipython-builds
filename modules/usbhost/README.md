@@ -39,9 +39,9 @@ beside `midiports`, and installs with `mip`:
   phone's USB tethering.
 - `usb-host-endpoints`: what's plugged into the host port, as endpointkit
   endpoints, so an app asks for a keyboard or a speaker rather than a device.
-- `usb-device-audio`, `usb-device-video`, `usb-device-msc` and `usb-hid`: the
-  board as a sound card, a webcam, a drive or a keyboard, on MicroPython's own
-  `machine.USBDevice`. These need no `_usbhost`; audio and video need the
+- `usb-device-audio`, `usb-device-video` and `usb-device-msc`, and `usb_hid`
+  from OmniPython itself: the board as a sound card, a webcam, a drive or a
+  keyboard, on MicroPython's own `machine.USBDevice`. These need no `_usbhost`; audio and video need the
   overlay's streaming endpoints (`USBDevice.Ring`, `USBDevice.stream()`).
 
 ```python

@@ -34,7 +34,7 @@ Start the host with the classes you'll stream (`usb.core.start(classes=("uvc",))
 
 ## Repository map
 
-The class packages (`usb-core`, `usb-host-*`, `usb-device-*`, `usb-hid`) are in omnipython, each in its own directory beside `midiports`. The ESP32 patch that lets the host borrow the OTG controller is the overlay's `patches/micropython/0039`.
+The class packages (`usb-core`, `usb-host-*`, `usb-device-*`) are in omnipython, each in its own directory beside `midiports`; `usb_hid` is part of omnipython's own library. The ESP32 patch that lets the host borrow the OTG controller is the overlay's `patches/micropython/0039`.
 
 | Path | Purpose |
 |---|---|

@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: MIT
 
 # OmniPython's own Python, from omnipython-lib: what lib/ holds, which is
-# `omnipython` and `bledev` as the library splits them, plus the host-only
+# `omnipython` and `bledev` as the library splits them (`omnipython` carries
+# hmilink, medialink, mp4mux and usb_hid; usb_hid runs over the usb-device-hid
+# that modules/micropython-lib freezes), plus the host-only
 # parts of audiodev, bledev, displaydev and multimer that mip ships in
 # `omnipython-desktop` and that lib/ has always carried, so a build's frozen
 # files are the ones it had when this module froze lib/ itself.
