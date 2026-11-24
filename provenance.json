@@ -242,6 +242,9 @@
   "0080-micropython-esp32-the-heap-leaves-psram-for-tls-and-the-network.patch": {
    "sha256": "cd7c12d33bd6422d36aecbe473dd20b8a43621fe1e6ba994110a272ad8e262ea"
   },
+  "0081-micropython-py-gc-each-allocation-size-starts-its-scan-past-runs-too-small.patch": {
+   "sha256": "d1029ba6bad9e36e64cc9127dbe376691cf5b4fd5a244ca8d3c6359dc4f49259"
+  },
   "0082-micropython-shared-tinyusb-ctrl-c-reaches-a-program-behind-unread-input.patch": {
    "sha256": "b60ee94add20d171d1b8a29de6fcfb190ba01708f8028d12b66c544113832a8a"
   }
