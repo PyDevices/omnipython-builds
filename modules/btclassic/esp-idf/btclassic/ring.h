@@ -29,6 +29,11 @@ typedef struct {
     volatile uint32_t read_pos;
     volatile bool reset;        // set by the writer's side: start over from empty
     bool running;               // the reader's: false while it refills to half
+    // The reader's view of the fill: a sender's bursts swing it far either
+    // way, so the trim follows the middle of each window's swing.
+    uint32_t swing_lo, swing_hi, swing_frames;
+    uint32_t level;             // the last window's middle
+    bool have_level;
     // The writer's counters.
     volatile uint32_t received, overruns;
     volatile uint32_t peak_l, peak_r;

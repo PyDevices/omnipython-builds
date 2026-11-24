@@ -134,6 +134,45 @@ static void test_ordinary_bursts_drop_nothing(void) {
     }
 }
 
+// A phone's bursts swing the fill by 81 to 110 ms either side of where it
+// sits, and on a 250 ms ring that swing alone crosses both trim edges. The
+// clocks agree, so once the trim has found where the swing sits it leaves the
+// bursts alone. Where a stream starts low or high in the swing it may move the
+// ring towards half once, by less than the slack it allows.
+static void test_bursts_alone_are_never_trimmed(void) {
+    static const uint32_t bursts[] = {ORDINARY_BURST_MS, LARGEST_BURST_MS};
+    static const int32_t offsets[] = {-1024, 0, 1024};
+    for (size_t i = 0; i < COUNT(sizes); i++) {
+        for (size_t j = 0; j < COUNT(rates); j++) {
+            for (size_t k = 0; k < COUNT(bursts); k++) {
+                for (size_t m = 0; m < COUNT(offsets); m++) {
+                    static sim_t s;
+                    uint32_t burst = burst_frames(rates[j], bursts[k]);
+                    start(&s, sizes[i], burst, 0);
+                    if (offsets[m] > 0) {
+                        send(&s, (uint32_t)offsets[m]);
+                    } else {
+                        s.next_burst += (uint32_t)-offsets[m];
+                    }
+                    stream(&s, rates[j], 10);
+                    btc_ring_stats_t settled = stats(&s);
+                    stream(&s, rates[j], 50);
+                    btc_ring_stats_t st = stats(&s);
+                    CHECK(st.dropped == settled.dropped && st.repeated == settled.repeated
+                        && st.dropped + st.repeated < sizes[i] / 8
+                        && st.overruns == 0 && st.underruns == 0,
+                        "%u frames at %u Hz, %u ms bursts, offset %d: dropped %u (%u settling), "
+                        "repeated %u (%u settling), overruns %u, underruns %u, fill %u to %u",
+                        (unsigned)sizes[i], (unsigned)rates[j], (unsigned)bursts[k], (int)offsets[m],
+                        (unsigned)st.dropped, (unsigned)settled.dropped, (unsigned)st.repeated,
+                        (unsigned)settled.repeated, (unsigned)st.overruns, (unsigned)st.underruns,
+                        (unsigned)s.low, (unsigned)s.high);
+                }
+            }
+        }
+    }
+}
+
 // A sender whose clock runs fast is held back with room left for its largest
 // burst: an overrun loses a whole packet.
 static void test_a_fast_sender_never_overruns(void) {
@@ -185,6 +224,7 @@ static void test_a_small_ring_trims_at_an_eighth(void) {
 
 int main(void) {
     test_ordinary_bursts_drop_nothing();
+    test_bursts_alone_are_never_trimmed();
     test_a_fast_sender_never_overruns();
     test_a_slow_sender_is_stretched();
     test_a_small_ring_trims_at_an_eighth();

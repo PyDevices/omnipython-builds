@@ -41,6 +41,36 @@ static uint32_t upper_edge(uint32_t limit) {
     return edge > near ? edge : near;
 }
 
+// A phone sends in bursts of 80 to 110 ms, so the fill read by read rises and
+// falls by that much whether or not the clocks agree, and on a small ring that
+// swing alone crosses both trim edges. The middle of the swing moves only when
+// the clocks disagree, so the trim watches that: the lowest and highest fill
+// over a window of reads, a window twice the ring's length so it spans several
+// bursts. Until the first window ends it says the ring sits at half: a sender
+// can't drift far in that time.
+static uint32_t level_of(btc_ring_t *r, uint32_t avail, size_t frames) {
+    if (r->swing_frames == 0) {
+        r->swing_lo = avail;
+        r->swing_hi = avail;
+    } else if (avail < r->swing_lo) {
+        r->swing_lo = avail;
+    } else if (avail > r->swing_hi) {
+        r->swing_hi = avail;
+    }
+    r->swing_frames += (uint32_t)frames;
+    if (r->swing_frames >= 2 * r->limit) {
+        r->level = r->swing_lo + (r->swing_hi - r->swing_lo) / 2;
+        r->have_level = true;
+        r->swing_frames = 0;
+    }
+    return r->have_level ? r->level : r->limit / 2;
+}
+
+static void level_restart(btc_ring_t *r) {
+    r->swing_frames = 0;
+    r->have_level = false;
+}
+
 void btc_ring_init(btc_ring_t *r, int16_t *buf, uint32_t capacity, uint8_t channels) {
     memset(r, 0, sizeof(*r));
     r->buf = buf;
@@ -110,6 +140,7 @@ size_t btc_ring_read(btc_ring_t *r, int16_t *dst, size_t frames, uint8_t out_cha
         r->reset = false;
         store(&r->read_pos, load(&r->write_pos));
         r->running = false;
+        level_restart(r);
     }
     uint32_t rp = r->read_pos;
     uint32_t avail = load(&r->write_pos) - rp;
@@ -136,16 +167,18 @@ size_t btc_ring_read(btc_ring_t *r, int16_t *dst, size_t frames, uint8_t out_cha
             avail = target;
             r->skipped += skip;
         }
+        level_restart(r);
     }
 
     // Take one frame more or less than asked for when the ring has drifted
     // away from half full: the sender's clock and ours never quite agree.
+    uint32_t level = level_of(r, avail, frames);
     size_t take = frames;
     int adjust = 0;
-    if (avail > upper_edge(r->limit) && avail > frames + 1) {
+    if (level > upper_edge(r->limit) && avail > frames + 1) {
         take = frames + 1;
         adjust = 1;
-    } else if (avail < target - slack && frames > 1) {
+    } else if (level < target - slack && frames > 1) {
         take = frames - 1;
         adjust = -1;
     }
