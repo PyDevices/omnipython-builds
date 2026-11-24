@@ -238,6 +238,9 @@
   },
   "0079-micropython-esp32-a-program-picks-the-default-network-interface.patch": {
    "sha256": "de9eb3cb2096e3ee0527d614758e157ca3a286647e528a3f5c893a9c16af6c6d"
+  },
+  "0080-micropython-shared-tinyusb-ctrl-c-reaches-a-program-behind-unread-input.patch": {
+   "sha256": "b60ee94add20d171d1b8a29de6fcfb190ba01708f8028d12b66c544113832a8a"
   }
  },
  "tinyusb_patches": {
