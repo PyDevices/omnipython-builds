@@ -5,13 +5,13 @@
 # The console is the UART on GPIO43/44, which the board's CH343 bridge brings
 # out on its "UART" USB-C connector, so esptool flashes it with no buttons.
 # The S3's own USB goes to the second connector through a multiplexer the
-# CH422G expander drives (shared with CAN), and is left off here: native USB
-# needs a USB VID and PID of its own, and the creator and creation IDs below
-# stand in until this board has registered ones.
-CIRCUITPY_CREATOR_ID = 0x00000000
-CIRCUITPY_CREATION_ID = 0x00000000
+# CH422G expander drives (shared with CAN); board.c sets it to USB at boot.
+# The PID is the board's own, from Espressif's usb-pids allocation.
+USB_VID = 0x303A
+USB_PID = 0x8235
+USB_PRODUCT = "ESP32-S3-Touch-LCD-7"
+USB_MANUFACTURER = "Waveshare Electronics"
 
-CIRCUITPY_USB_DEVICE = 0
 CIRCUITPY_ESP_USB_SERIAL_JTAG = 0
 UF2_BOOTLOADER = 0
 
