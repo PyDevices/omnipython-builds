@@ -1,0 +1,42 @@
+From 923c6e576be1f9ba1fc9c2f8f21a7b995460d816 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 06:07:25 -0600
+Subject: [PATCH] shared/tinyusb: USB callbacks run with the scheduler held.
+
+A transfer callback run from a direct mp_usbd_task() call (the USB-CDC
+stdin poll at the REPL, or a stdout write that waits) ran with the
+scheduler unlocked, so a timer's scheduled callback could run between two
+of its bytecodes. A program reading a usb.device CDC port from a timer
+then read the port's receive buffer in the middle of the callback that
+fills it, submitted a second OUT transfer, and the buffer's next
+finish_write() failed its assert: the OUT endpoint never restarted and the
+port went deaf. The scheduler is now held while TinyUSB runs, as it is when
+the task runs from the scheduler.
+---
+ shared/tinyusb/mp_usbd_runtime.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/shared/tinyusb/mp_usbd_runtime.c b/shared/tinyusb/mp_usbd_runtime.c
+index 4a1de4079..1f6d0e1ff 100644
+--- a/shared/tinyusb/mp_usbd_runtime.c
++++ b/shared/tinyusb/mp_usbd_runtime.c
+@@ -537,7 +537,16 @@ void mp_usbd_task(void) {
+ static void mp_usbd_task_inner(void) {
+     in_usbd_task = true;
+ 
++    // Python's USB callbacks run inside tud_task_ext(). This task is also
++    // entered directly, from the USB-CDC stdin poll or a stdout write that
++    // waits, and then the scheduler isn't locked: a scheduled callback (a
++    // timer, say) could run between two bytecodes of a transfer callback and
++    // call into the same driver while its buffers are half updated. Hold the
++    // scheduler while TinyUSB runs, as it is held when this task is itself
++    // run by the scheduler.
++    mp_sched_lock();
+     tud_task_ext(0, false);
++    mp_sched_unlock();
+ 
+     mp_obj_usb_device_t *usbd = MP_OBJ_TO_PTR(MP_STATE_VM(usbd));
+ 
+-- 
+2.43.0
+
