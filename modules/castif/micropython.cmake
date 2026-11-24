@@ -25,4 +25,8 @@ if(ESP_PLATFORM AND IDF_TARGET STREQUAL "esp32p4")
     target_include_directories(usermod_castif INTERFACE ${CMAKE_CURRENT_LIST_DIR}/src)
     target_link_libraries(usermod_castif INTERFACE idf::freertos idf::esp_timer idf::lwip)
     target_link_libraries(usermod INTERFACE usermod_castif)
+elseif(ESP_PLATFORM)
+    message(STATUS
+        "castif: skipped -- builds only on the ESP32-P4. "
+        "The firmware builds without the castif module.")
 endif()
