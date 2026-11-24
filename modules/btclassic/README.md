@@ -139,6 +139,19 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_SPIRAM_SPEED_80M=y
 ```
 
+On a classic ESP32, pace your file writes while Bluetooth audio plays.
+Writing a file erases flash, and the classic ESP32's flash can't pause an
+erase, so both cores stop until it's done: on an Adafruit Feather ESP32 V2,
+a 4 KB write takes 80 to 144 ms. The Bluetooth stack can't take the phone's
+packets meanwhile, so the audio is lost before it reaches `AudioSink`, and a
+deeper buffer can't bring it back. With a 48 kHz stream playing on that
+board, 4 KB writes back to back let 6,741 of the 48,000 frames a second
+through, and one 4 KB write every 500 ms let 42,688 through. Save settings
+while playback is paused, or write a little at a time with gaps between. On
+the ESP32-S31, the Waveshare ESP32-S31-Touch-LCD-4.3C's flash pauses an
+erase and its build turns that on, so writes there don't interrupt the
+music. The ESP32-S31 Zero's flash can't, so the same advice holds there.
+
 On the unix port the module builds on a loopback backend with no radio, so
 these paths have desktop tests: [`tests/host_probe.py`](tests/host_probe.py)
 plays music and a call through the pump while the interpreter collects
