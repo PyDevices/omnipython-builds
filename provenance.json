@@ -247,6 +247,9 @@
   },
   "0082-micropython-shared-tinyusb-ctrl-c-reaches-a-program-behind-unread-input.patch": {
    "sha256": "b60ee94add20d171d1b8a29de6fcfb190ba01708f8028d12b66c544113832a8a"
+  },
+  "0084-micropython-extmod-vfs-lfs2-statvfs-counts-each-directory-once.patch": {
+   "sha256": "7cf550b00d75bcf3885ed798640fc31053a4d2e46e4fdaa92dd875016af0e1dc"
   }
  },
  "tinyusb_patches": {

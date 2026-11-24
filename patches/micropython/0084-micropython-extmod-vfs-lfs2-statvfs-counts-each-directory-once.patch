@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] extmod/vfs_lfsx: statvfs on littlefs v2 counts each
+ directory once.
+
+os.statvfs() on a littlefs v2 filesystem reported two blocks too few free
+for every directory, so a board with many folders in /lib and /apps could
+show a negative free count while it still had room. statvfs counted the
+blocks lfs2_fs_traverse() visits, and that visits each directory's
+metadata pair twice: once along the chain of pairs, and once from its
+parent's entry. lfs2_fs_size() makes the same walk without the second
+visit, and it's what littlefs offers for this count. The allocator's own
+walk is unchanged: marking a block twice there does no harm.
+
+An ESP32-P4 board's 7.27 MB filesystem, read out whole, has 654 files and
+99 directories. Mounted by the unix port's VfsLfs2 before this change,
+statvfs gave -89 free blocks of 1776; with it, 109, the count
+littlefs-python gives for the same image. The tests/extmod vfs tests pass
+on the unix port, with vfs_lfs.py's expected output moving from 7 free
+blocks to 9 once its one directory is counted once.
+
+Based-on: micropython b70ae1aca (v1.30.0-preview-160)
+---
+ extmod/vfs_lfsx.c           | 11 +++++++++--
+ tests/extmod/vfs_lfs.py.exp |  2 +-
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/extmod/vfs_lfsx.c b/extmod/vfs_lfsx.c
+--- a/extmod/vfs_lfsx.c
++++ b/extmod/vfs_lfsx.c
+@@ -414,21 +414,28 @@ static mp_obj_t MP_VFS_LFSx(stat)(mp_obj_t self_in, mp_obj_t path_in) {
+ }
+ static MP_DEFINE_CONST_FUN_OBJ_2(MP_VFS_LFSx(stat_obj), MP_VFS_LFSx(stat));
+ 
++#if LFS_BUILD_VERSION == 1
+ static int LFSx_API(traverse_cb)(void *data, LFSx_API(block_t) bl) {
+     (void)bl;
+     uint32_t *n = (uint32_t *)data;
+     *n += 1;
+     return LFSx_MACRO(_ERR_OK);
+ }
++#endif
+ 
+ static mp_obj_t MP_VFS_LFSx(statvfs)(mp_obj_t self_in, mp_obj_t path_in) {
+     (void)path_in;
+     MP_OBJ_VFS_LFSx *self = MP_OBJ_TO_PTR(self_in);
+-    uint32_t n_used_blocks = 0;
+     #if LFS_BUILD_VERSION == 1
++    uint32_t n_used_blocks = 0;
+     int ret = LFSx_API(traverse)(&self->lfs, LFSx_API(traverse_cb), &n_used_blocks);
+     #else
+-    int ret = LFSx_API(fs_traverse)(&self->lfs, LFSx_API(traverse_cb), &n_used_blocks);
++    // lfs2_fs_traverse() visits each directory's metadata pair twice, once
++    // along the chain of pairs and once from its parent's entry, so
++    // counting its blocks reports 2 blocks too many for every directory.
++    // lfs2_fs_size() counts each block once.
++    LFSx_API(ssize_t) ret = LFSx_API(fs_size)(&self->lfs);
++    uint32_t n_used_blocks = ret;
+     #endif
+     if (ret < 0) {
+         mp_raise_OSError(-ret);
+diff --git a/tests/extmod/vfs_lfs.py.exp b/tests/extmod/vfs_lfs.py.exp
+--- a/tests/extmod/vfs_lfs.py.exp
++++ b/tests/extmod/vfs_lfs.py.exp
+@@ -52,7 +52,7 @@ write 0
+ write 1
+ write 2
+ write 3
+-(1024, 1024, 30, 7, 7, 0, 0, 0, 0, 255)
++(1024, 1024, 30, 9, 9, 0, 0, 0, 0, 255)
+ [('test', 32768, 0, 8), ('testbig2', 32768, 0, 16384), ('testdir', 16384, 0, 0)]
+ [('testbig2', 32768, 0, 16384)]
+ [('test', 32768, 0, 8), ('testbig2', 32768, 0, 16384), ('testdir', 16384, 0, 0)]
