@@ -26,6 +26,9 @@
 # OMNIPYTHON_BOARD_MANIFEST naming it, and that is the base instead of the
 # port's.
 #
+# options.module_options gives a module's own manifest its options:
+# {"icons": {"deflate": True}} includes modules/icons with deflate=True.
+#
 # options.board_manifest=False starts from the port's manifest even when the
 # board has its own, for a variant that wants only part of what the board's
 # adds (the GIGA's DISPLAY_SHIELD, which has no Bluetooth for its aioble).
@@ -35,7 +38,7 @@
 # frozen before anything else resolves one).
 import os
 
-options.defaults(base=True, modules=None, board_manifest=True)
+options.defaults(base=True, modules=None, board_manifest=True, module_options=None)
 
 # lib-overrides/ holds the few micropython-lib packages we freeze our own copy
 # of (mip, for a connection kept open per host). Searched ahead of
@@ -107,7 +110,7 @@ for _name in (n.strip() for n in _names.split(",")):
     # again through its real path would otherwise be compiled twice.
     _dir = os.path.realpath(_dir)
     if os.path.isfile(os.path.join(_dir, "manifest.py")):
-        include(_dir)
+        include(_dir, **(options.module_options or {}).get(_name, {}))
         continue
     # A C module that carries no manifest of its own (ulab keeps its glue in
     # code/): its C half alone.

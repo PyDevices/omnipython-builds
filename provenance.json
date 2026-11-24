@@ -250,6 +250,9 @@
   },
   "0083-micropython-shared-tinyusb-usb-callbacks-run-with-the-scheduler-held.patch": {
    "sha256": "ce6e474b6ee916fcd36e3878a820bac3f8f1ed3781bd6bf7543975c1f4220f37"
+  },
+  "0084-micropython-esp32-network-lan-builds-without-the-ethernet-mac.patch": {
+   "sha256": "4d63ebd7af3775b5b71b096f63eb60e3d929677095654c1bca658da42fcbc9ae"
   }
  },
  "tinyusb_patches": {
