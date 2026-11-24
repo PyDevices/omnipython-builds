@@ -750,14 +750,15 @@ static void usbhost_host_fifo_for(uint16_t classes, usb_host_config_t *config) {
         config->fifo_settings_custom.nptx_fifo_lines = nptx;
         config->fifo_settings_custom.ptx_fifo_lines = 50 * k;
         #else
-        // IN 344, non-periodic OUT 64, periodic OUT 384, all 200 lines. A
+        // IN 328, non-periodic OUT 64, periodic OUT 400, all 200 lines. A
         // speaker's endpoint is claimed at the packet size it declares, not
-        // the one it sends, and store-bought USB-C dongles declare 384 bytes
-        // for 48 kHz stereo (192 sent): 200 refused them. A microphone at
+        // the one it sends. Store-bought USB-C dongles declare 384 bytes for
+        // 48 kHz stereo (192 sent), and a 96 kHz-capable one declares 388
+        // (one frame over, 31b2:0111): 384 refused it. A microphone at
         // 48 kHz stereo, 16 or 24 bits (196 or 294), still fits IN.
-        config->fifo_settings_custom.rx_fifo_lines = 88;
+        config->fifo_settings_custom.rx_fifo_lines = 84;
         config->fifo_settings_custom.nptx_fifo_lines = nptx;
-        config->fifo_settings_custom.ptx_fifo_lines = 96;
+        config->fifo_settings_custom.ptx_fifo_lines = 100;
         #endif
         why = "uac asked for without uvc, so periodic OUT gets the room a speaker needs";
     } else {
