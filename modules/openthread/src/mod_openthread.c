@@ -32,6 +32,7 @@
 
 #if CONFIG_OPENTHREAD_ENABLED
 
+#include "esp_coexist.h"
 #include "esp_heap_caps.h"
 #include "esp_ieee802154.h"
 #include "esp_openthread.h"
@@ -197,6 +198,14 @@ static mp_obj_t ot_start(void) {
         xSemaphoreTake(s_sync, portMAX_DELAY);  // the task has ended
         ot_esp_check(s_init_err);
     }
+    #if CONFIG_ESP_COEX_SW_COEXIST_ENABLE && CONFIG_SOC_IEEE802154_SUPPORTED
+    // Wi-Fi and 802.15.4 share the radio. Until this call the coexistence
+    // arbiter doesn't weigh 802.15.4's requests against Wi-Fi's, and a
+    // Thread router, which listens all the time, keeps the radio: Wi-Fi
+    // stays associated but carries nothing. ESP-IDF's border router does
+    // the same after it starts OpenThread.
+    esp_coex_wifi_i154_enable();
+    #endif
     s_started = true;
     return mp_const_none;
 }
