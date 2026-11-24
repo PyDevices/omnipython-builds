@@ -60,7 +60,7 @@ the package's `__init__` and the base they share, and any effect they build
 on:
 
 ```bash
-AUDIOEFFECTS=chorus,reverb ./build.py --port esp32 --board ESP32_GENERIC --variant AUDIO_KIT --flash 4MB --modules omnipython,displayif,lvgl,btclassic,audioif,audiodsp,audioeffects
+AUDIOEFFECTS=chorus,reverb ./build.py --port esp32 --board ESP32_GENERIC --variant AUDIO_KIT --flash 4MB --modules omnipython,displayif,lvgl,btclassic,audioif,audiodsp,audioeffects,ttfio,icons
 ```
 
 On the board, `audioeffects.ALL` lists `Chorus` and `Reverb`, and

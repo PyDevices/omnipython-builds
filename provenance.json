@@ -251,6 +251,9 @@
   "0083-micropython-shared-tinyusb-usb-callbacks-run-with-the-scheduler-held.patch": {
    "sha256": "ce6e474b6ee916fcd36e3878a820bac3f8f1ed3781bd6bf7543975c1f4220f37"
   },
+  "0084-micropython-esp32-network-lan-builds-without-the-ethernet-mac.patch": {
+   "sha256": "4d63ebd7af3775b5b71b096f63eb60e3d929677095654c1bca658da42fcbc9ae"
+  },
   "0085-micropython-extmod-vfs-lfs2-statvfs-counts-each-directory-once.patch": {
    "sha256": "7cf550b00d75bcf3885ed798640fc31053a4d2e46e4fdaa92dd875016af0e1dc"
   }
