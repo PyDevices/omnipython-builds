@@ -37,6 +37,8 @@ beside `midiports`, and installs with `mip`:
   `usb-host-video`, `usb-host-net`: a drive, a keyboard or mouse, a USB serial
   device, a speaker or microphone, a webcam, and the internet through a
   phone's USB tethering.
+- `usb-host-endpoints`: what's plugged into the host port, as endpointkit
+  endpoints, so an app asks for a keyboard or a speaker rather than a device.
 - `usb-device-audio`, `usb-device-video`, `usb-device-msc` and `usb-hid`: the
   board as a sound card, a webcam, a drive or a keyboard, on MicroPython's own
   `machine.USBDevice`. These need no `_usbhost`; audio and video need the
