@@ -23,20 +23,27 @@ measured up to MICROPY_GC_FREE_HINTS blocks either side, so freeing one
 small block in a fragmented region doesn't send larger allocations back
 to scan it. A collection resets them all, as it reset the one before.
 
+With MICROPY_GC_SPLIT_HEAP each area keeps its own hints, and one more
+word: the smallest allocation, in blocks, that a scan of the area has
+failed to place since anything in it was last freed. A larger request
+skips the area. Without it, every allocation too big for a full area of
+PSRAM walked that area's whole table before trying the next.
+
 Placement is unchanged: the hints only skip runs a first-fit scan would
-have rejected. A model of the allocator, run through 400,000 random
-allocations, frees and shrinks, found the same block as a scan from the
-start every time, and differed as soon as either rule was loosened.
+have rejected. A model of the allocator, with one heap area and with four,
+run through 640,000 random allocations, frees and shrinks, found the same
+block as a scan from the start every time, and differed as soon as either
+rule was loosened.
 
 The unix port, a 16 MB heap broken into 12 MB of alternating holes,
-building the same kit: 272 ms before, 28 ms after, which is the
-fresh-heap time. The table costs 7 words per heap area.
+building the same kit: 272 ms before, 28 ms after, which is the fresh-heap
+time. The table costs 7 words per heap area, 8 with a split heap.
 ---
 diff --git a/py/gc.c b/py/gc.c
-index a6c8faaa2..6dcbef413 100644
+index a6c8faaa2..b38d3c09e 100644
 --- a/py/gc.c
 +++ b/py/gc.c
-@@ -92,6 +92,44 @@
+@@ -92,6 +92,50 @@
  #define ATB_HEAD_TO_MARK(area, block) do { area->gc_alloc_table_start[(block) / BLOCKS_PER_ATB] |= (AT_MARK << BLOCK_SHIFT(block)); } while (0)
  #define ATB_MARK_TO_HEAD(area, block) do { area->gc_alloc_table_start[(block) / BLOCKS_PER_ATB] &= (~(AT_TAIL << BLOCK_SHIFT(block))); } while (0)
  
@@ -44,6 +51,9 @@ index a6c8faaa2..6dcbef413 100644
 +    for (size_t k = 0; k < MICROPY_GC_FREE_HINTS; k++) {
 +        area->gc_last_free_atb_index[k] = 0;
 +    }
++    #if MICROPY_GC_SPLIT_HEAP
++    area->gc_free_run_limit = SIZE_MAX;
++    #endif
 +}
 +
 +// No free run of n_blocks or more starts before ATB byte atb.
@@ -71,6 +81,9 @@ index a6c8faaa2..6dcbef413 100644
 +    }
 +    size_t run = back + n + fwd;
 +    size_t atb = (start - back) / BLOCKS_PER_ATB;
++    #if MICROPY_GC_SPLIT_HEAP
++    area->gc_free_run_limit = SIZE_MAX;
++    #endif
 +    for (size_t k = 0; k < MICROPY_GC_FREE_HINTS && k < run; k++) {
 +        if (atb < area->gc_last_free_atb_index[k]) {
 +            area->gc_last_free_atb_index[k] = atb;
@@ -81,7 +94,7 @@ index a6c8faaa2..6dcbef413 100644
  #define BLOCK_FROM_PTR(area, ptr) (((byte *)(ptr) - area->gc_pool_start) / BYTES_PER_BLOCK)
  #define PTR_FROM_BLOCK(area, block) (((block) * BYTES_PER_BLOCK + (uintptr_t)area->gc_pool_start))
  
-@@ -201,7 +239,7 @@ static void gc_setup_area(mp_state_mem_area_t *area, void *start, void *end) {
+@@ -201,7 +245,7 @@ static void gc_setup_area(mp_state_mem_area_t *area, void *start, void *end) {
          #endif
          );
  
@@ -90,7 +103,7 @@ index a6c8faaa2..6dcbef413 100644
      area->gc_last_used_block = 0;
  
      #if MICROPY_GC_SPLIT_HEAP
-@@ -609,7 +647,7 @@ void gc_collect_end(void) {
+@@ -609,7 +653,7 @@ void gc_collect_end(void) {
      MP_STATE_MEM(gc_last_free_area) = &MP_STATE_MEM(area);
      #endif
      for (mp_state_mem_area_t *area = &MP_STATE_MEM(area); area != NULL; area = NEXT_AREA(area)) {
@@ -99,7 +112,7 @@ index a6c8faaa2..6dcbef413 100644
      }
      MP_STATE_THREAD(gc_lock_depth) &= ~GC_COLLECT_FLAG;
      GC_EXIT();
-@@ -924,6 +962,9 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
+@@ -924,6 +968,9 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
      }
      #endif
  
@@ -109,16 +122,21 @@ index a6c8faaa2..6dcbef413 100644
      for (;;) {
  
          #if MICROPY_GC_SPLIT_HEAP
-@@ -935,7 +976,7 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
+@@ -935,7 +982,12 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
          // look for a run of n_blocks available blocks
          for (; area != NULL; area = NEXT_AREA(area), i = 0) {
              n_free = 0;
 -            for (i = area->gc_last_free_atb_index; i < area->gc_alloc_table_byte_len; i++) {
++            #if MICROPY_GC_SPLIT_HEAP
++            if (n_blocks >= area->gc_free_run_limit) {
++                continue;
++            }
++            #endif
 +            for (i = area->gc_last_free_atb_index[hint]; i < area->gc_alloc_table_byte_len; i++) {
                  MICROPY_GC_HOOK_LOOP(i);
                  byte a = area->gc_alloc_table_start[i];
                  // *FORMAT-OFF*
-@@ -950,9 +991,9 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
+@@ -950,10 +1002,13 @@ void *gc_alloc(size_t n_bytes, unsigned int alloc_flags) {
              // filled, so we won't try to find free space here again until
              // space is freed.
              #if MICROPY_GC_SPLIT_HEAP
@@ -129,9 +147,13 @@ index a6c8faaa2..6dcbef413 100644
 +                // Nothing this size or larger is free here: point past the end of the table.
 +                gc_free_hints_raise(area, n_blocks, area->gc_alloc_table_byte_len);
              }
++            // Nor is anything this size or larger, so a larger allocation skips the area
++            // too, until something in it is freed.
++            area->gc_free_run_limit = MIN(area->gc_free_run_limit, n_blocks);
              #endif
          }
-@@ -980,16 +1021,18 @@ found:
+ 
+@@ -980,16 +1035,18 @@ found:
      end_block = i;
      start_block = i - n_free + 1;
  
@@ -156,7 +178,7 @@ index a6c8faaa2..6dcbef413 100644
      }
  
      area->gc_last_used_block = MAX(area->gc_last_used_block, end_block);
-@@ -1105,17 +1148,16 @@ void gc_free(void *ptr) {
+@@ -1105,17 +1162,16 @@ void gc_free(void *ptr) {
      }
      #endif
  
@@ -178,7 +200,7 @@ index a6c8faaa2..6dcbef413 100644
      GC_EXIT();
  
      #if EXTENSIVE_HEAP_PROFILING
-@@ -1262,10 +1304,8 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
+@@ -1262,10 +1318,8 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
          }
          #endif
  
@@ -209,10 +231,10 @@ index 5a6d64bdb..c2505896f 100644
  #define MICROPY_GC_ALLOC_THRESHOLD (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_CORE_FEATURES)
  #endif
 diff --git a/py/mpstate.h b/py/mpstate.h
-index 92d85fc53..3a4fcb124 100644
+index 92d85fc53..d1c5afb2c 100644
 --- a/py/mpstate.h
 +++ b/py/mpstate.h
-@@ -116,7 +116,9 @@ typedef struct _mp_state_mem_area_t {
+@@ -116,7 +116,13 @@ typedef struct _mp_state_mem_area_t {
      byte *gc_pool_start;
      byte *gc_pool_end;
  
@@ -220,6 +242,10 @@ index 92d85fc53..3a4fcb124 100644
 +    // Entry k: no free run of k + 1 blocks (the last: of that many or more) starts
 +    // before this ATB byte, so an allocation of that size starts its scan there.
 +    size_t gc_last_free_atb_index[MICROPY_GC_FREE_HINTS];
++    #if MICROPY_GC_SPLIT_HEAP
++    // No free run of this many blocks or more is in the area.
++    size_t gc_free_run_limit;
++    #endif
      size_t gc_last_used_block; // The block ID of the highest block allocated in the area
  } mp_state_mem_area_t;
  
