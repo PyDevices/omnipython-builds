@@ -7,3 +7,6 @@
 *.sh text eol=lf
 *.jpg binary
 *.h264 binary
+# ESP-IDF's heap/tlsf/tlsf.c has CRLF line endings, so a patch to it has to
+# keep them byte for byte, or git apply finds no match.
+patches/esp-idf/heap/*.patch -text

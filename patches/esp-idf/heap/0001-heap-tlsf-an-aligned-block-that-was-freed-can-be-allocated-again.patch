@@ -1,0 +1,130 @@
+heap: an aligned block that was freed can be allocated again
+
+ESP-IDF v5.5.4 (735507283d5b2f9fb363a1901172dbd9e847945d),
+components/heap/tlsf/tlsf.c.
+
+TLSF's good-fit search rounds a request up to the next size class, so it
+never looks at the free blocks in the request's own class, even those big
+enough for it. tlsf_malloc() keeps the rounded size, so the block it hands
+out, once freed, can always be found again. tlsf_memalign_offs() searches
+for the size plus room for its alignment gap, rounded up, but trims the
+block it hands out to the size itself. The hole that block leaves when it is
+freed is then exactly the size: in a class the same request never searches.
+
+So a large DMA buffer allocated with heap_caps_aligned_alloc() (or a
+MALLOC_CAP_DMA allocation, which aligns), freed, and asked for again fails
+whenever its neighbours were taken in the meantime, though the room for it
+is free and in one piece. heap_caps_get_largest_free_block() shows it: it
+reads the start of the hole's size class (0x21000 for the 138,240-byte
+H.264 deblocking buffer, 0x3F0000 for a 1920x1080 RGB565 camera frame), just
+under the request. On an ESP32-P4 a camera program closed and opened again
+lost both its H.264 encoder and its camera frame buffers this way.
+
+When the good-fit search finds nothing, both functions now look through the
+free blocks it passed over, from the class of the request's own size up, for
+the first one that holds the request at the alignment asked for. This only
+runs where the allocation would otherwise have failed. On chips that use
+TLSF from ROM (CONFIG_HEAP_TLSF_USE_ROM_IMPL) the ROM's functions are used
+and this file's changes have no effect.
+
+--- a/components/heap/tlsf/tlsf.c
++++ b/components/heap/tlsf/tlsf.c
+@@ -431,6 +431,72 @@
+ 	return tlsf_cast(pool_t, (char*)tlsf + tlsf_size(tlsf));
+ }
+ 
++/*
++** The good-fit search in block_locate_free() rounds a request up to the
++** next size class, so it never offers a free block from the request's own
++** class, even one big enough. An aligned allocation is searched for with
++** room for its alignment gap but trimmed to its own size once placed, so
++** the hole it leaves when freed is exactly that size: in a class the same
++** request never searches. A large DMA buffer that is freed and asked for
++** again then fails while the room for it is free and in one piece.
++**
++** When the good-fit search finds nothing, look through the free blocks it
++** passed over, from the class of the request's own size up, for the first
++** that holds `size` bytes at the alignment asked for. This only runs where
++** the allocation would otherwise fail.
++*/
++static size_t block_fit_gap(block_header_t* block, size_t align, size_t gap_minimum, size_t off_adjust)
++{
++	if (align <= ALIGN_SIZE)
++	{
++		return 0;
++	}
++	void* ptr = block_to_ptr(block);
++	void* aligned = align_ptr(ptr, align);
++	size_t gap = tlsf_cast(size_t, tlsf_cast(tlsfptr_t, aligned) - tlsf_cast(tlsfptr_t, ptr));
++	if ((gap && gap < gap_minimum) || (!gap && off_adjust))
++	{
++		const size_t gap_remain = gap_minimum - gap;
++		const size_t offset = tlsf_max(gap_remain, align);
++		const void* next_aligned = tlsf_cast(void*, tlsf_cast(tlsfptr_t, aligned) + offset);
++		aligned = align_ptr(next_aligned, align);
++		gap = tlsf_cast(size_t, tlsf_cast(tlsfptr_t, aligned) - tlsf_cast(tlsfptr_t, ptr));
++	}
++	return gap;
++}
++
++static block_header_t* block_locate_fit(control_t* control, size_t size, size_t align, size_t gap_minimum, size_t off_adjust)
++{
++	int fl = 0, sl = 0;
++	mapping_insert(control, size, &fl, &sl);
++	for (; fl < (int)control->fl_index_count; ++fl, sl = 0)
++	{
++		unsigned int sl_map = control->sl_bitmap[fl] & (~0U << sl);
++		while (sl_map)
++		{
++			const int i = tlsf_ffs(sl_map);
++			sl_map &= ~(1U << i);
++			block_header_t* block = control->blocks[fl * control->sl_index_count + i];
++			for (; block != &control->block_null; block = block->next_free)
++			{
++				const size_t have = block_size(block);
++				const size_t gap = block_fit_gap(block, align, gap_minimum, off_adjust);
++				const size_t lead = gap ? gap - off_adjust : 0;
++				if (gap && !block_can_split(block, lead))
++				{
++					continue;
++				}
++				if (have - lead >= size)
++				{
++					remove_free_block(control, block, fl, i);
++					return block;
++				}
++			}
++		}
++	}
++	return 0;
++}
++
+ void* tlsf_malloc(tlsf_t tlsf, size_t size)
+ {
+ 	control_t* control = tlsf_cast(control_t*, tlsf);
+@@ -440,8 +506,14 @@
+ 	if (adjust == 0) {
+ 		return NULL;
+ 	}
++	const size_t asked = adjust;
+ 	// block_locate_free() may adjust our allocated size further.
+ 	block_header_t* block = block_locate_free(control, &adjust);
++	if (!block)
++	{
++		adjust = asked;
++		block = block_locate_fit(control, adjust, ALIGN_SIZE, 0, 0);
++	}
+ 	return block_prepare_used(control, block, adjust);
+ }
+ 
+@@ -570,6 +642,10 @@
+ 	size_t aligned_size = (adjust && align > ALIGN_SIZE) ? size_with_gap : adjust;
+ 
+ 	block_header_t* block = block_locate_free(control, &aligned_size);
++	if (!block && adjust)
++	{
++		block = block_locate_fit(control, adjust, align, gap_minimum, off_adjust);
++	}
+ 
+ 	/* This can't be a static assert. */
+ 	tlsf_assert(sizeof(block_header_t) == block_size_min + block_header_overhead);
