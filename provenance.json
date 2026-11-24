@@ -238,6 +238,9 @@
   },
   "0079-micropython-esp32-a-program-picks-the-default-network-interface.patch": {
    "sha256": "de9eb3cb2096e3ee0527d614758e157ca3a286647e528a3f5c893a9c16af6c6d"
+  },
+  "0080-micropython-esp32-the-heap-leaves-psram-for-tls-and-the-network.patch": {
+   "sha256": "cd7c12d33bd6422d36aecbe473dd20b8a43621fe1e6ba994110a272ad8e262ea"
   }
  },
  "tinyusb_patches": {
