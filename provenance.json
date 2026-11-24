@@ -244,6 +244,9 @@
   },
   "0082-micropython-shared-tinyusb-ctrl-c-reaches-a-program-behind-unread-input.patch": {
    "sha256": "b60ee94add20d171d1b8a29de6fcfb190ba01708f8028d12b66c544113832a8a"
+  },
+  "0083-micropython-shared-tinyusb-usb-callbacks-run-with-the-scheduler-held.patch": {
+   "sha256": "ce6e474b6ee916fcd36e3878a820bac3f8f1ed3781bd6bf7543975c1f4220f37"
   }
  },
  "tinyusb_patches": {
