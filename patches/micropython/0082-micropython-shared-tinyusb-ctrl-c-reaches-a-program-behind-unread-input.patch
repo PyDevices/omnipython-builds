@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 00:00:00 -0600
+Subject: [PATCH] shared/tinyusb: Ctrl-C reaches a program behind unread
+ console input.
+
+On a native USB console, a running program that doesn't read stdin could
+not be interrupted once 260 characters were waiting (omnipython-builds#575).
+tud_cdc_rx_cb() moves a byte from the USB FIFO to the stdin ring only
+while the ring has room, and looks for the interrupt character only on the
+bytes it moves. With the ring full, the Ctrl-C stayed in the FIFO behind
+the earlier characters, and the program ran on until it ended or the board
+was reset.
+
+While the interrupt character is set, which is while a program runs with
+Ctrl-C enabled, a byte that finds the ring full is now read and dropped,
+and the interrupt character still raises KeyboardInterrupt. A UART console
+does the same when its ring is full. At the REPL, and in a program that
+has called micropython.kbd_intr(-1) to read raw bytes, the interrupt
+character is unset and the host is held back as before, so nothing is
+lost there.
+
+On a QT Py ESP32-S3, with 270, 300, 600 and 2000 characters typed into a
+running time.sleep(20), Ctrl-C was ignored before and now interrupts in
+0.2 s, as it does with fewer. A program under kbd_intr(-1) reading 3000
+bytes slowly still gets all of them, a 2000-character line pasted at the
+REPL arrives whole, and a 30 KB file put over the raw REPL verifies.
+
+Based-on: micropython b70ae1aca (v1.30.0-preview-160)
+---
+ shared/tinyusb/mp_usbd_cdc.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/shared/tinyusb/mp_usbd_cdc.c b/shared/tinyusb/mp_usbd_cdc.c
+--- a/shared/tinyusb/mp_usbd_cdc.c
++++ b/shared/tinyusb/mp_usbd_cdc.c
+@@ -92,6 +92,19 @@
+             #else
+             ringbuf_put(&stdin_ringbuf, data_char);
+             #endif
++        #if MICROPY_KBD_EXCEPTION
++        } else if (mp_interrupt_char != -1) {
++            // The ring is full and a program is running that doesn't read
++            // it. Holding the rest back in the USB FIFO would hide the
++            // interrupt character behind it, so drop characters instead,
++            // as a UART console does when its ring is full, and still act
++            // on the interrupt character. With kbd_intr(-1), and at the
++            // REPL, the host is held back and nothing is lost.
++            if (tud_cdc_n_read_char(itf) == mp_interrupt_char) {
++                stdin_ringbuf.iget = stdin_ringbuf.iput = 0;
++                mp_sched_keyboard_interrupt();
++            }
++        #endif
+         } else {
+             cdc_itf_pending |= (1 << itf);
+             return;
+-- 
+2.43.0
