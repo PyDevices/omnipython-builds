@@ -256,6 +256,9 @@
   },
   "0085-micropython-extmod-vfs-lfs2-statvfs-counts-each-directory-once.patch": {
    "sha256": "7cf550b00d75bcf3885ed798640fc31053a4d2e46e4fdaa92dd875016af0e1dc"
+  },
+  "0086-micropython-esp32-nvs-closes-its-handle-when-collected.patch": {
+   "sha256": "120062d4ea8b024dd48423bced664a39a8ed06bdfedd97d0e530b71ae4db71e3"
   }
  },
  "tinyusb_patches": {
