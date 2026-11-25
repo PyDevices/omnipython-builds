@@ -19,30 +19,32 @@ check it, going inert - cleared-timer semantics - when their interpreter
 is gone.
 
 diff --git a/ports/webassembly/objpyproxy.js b/ports/webassembly/objpyproxy.js
-index 6b132e19d..3b0096e02 100644
+index c90db6557..56ae85857 100644
 --- a/ports/webassembly/objpyproxy.js
 +++ b/ports/webassembly/objpyproxy.js
-@@ -223,9 +223,20 @@ const py_proxy_handler = {
+@@ -223,6 +223,7 @@ const py_proxy_handler = {
  class PyProxyThenable {
      constructor(ref) {
          this._ref = ref;
 +        this._generation = globalThis.proxy_js_generation;
      }
  
-     then(resolve, reject) {
+     // Resume the generator with a value to receive ("send") or an
+@@ -235,6 +236,14 @@ class PyProxyThenable {
+     // cannot be thrown instead: this function is async, so a throw
+     // would only reject its own, unobserved promise.
+     async _resume(send, throw_, resolve, reject) {
 +        if (this._generation !== globalThis.proxy_js_generation) {
 +            // The interpreter this generator belonged to is gone; its ref
 +            // would resolve to an arbitrary object in the current one.  The
 +            // promise machinery calls this spontaneously, so settle the
 +            // chain instead of throwing into it.
-+            reject(
-+                new Error("PyProxyThenable outlived its interpreter"),
-+            );
++            reject(new Error("PyProxyThenable outlived its interpreter"));
 +            return undefined;
 +        }
-         const values = Module._malloc(3 * 3 * 4);
-         proxy_convert_js_to_mp_obj_jsside(resolve, values + 3 * 4);
-         proxy_convert_js_to_mp_obj_jsside(reject, values + 2 * 3 * 4);
+         try {
+             const values = Module._malloc(5 * 3 * 4);
+             proxy_convert_js_to_mp_obj_jsside(resolve, values + 1 * 3 * 4);
 diff --git a/ports/webassembly/proxy_js.js b/ports/webassembly/proxy_js.js
 index 60b832d81..58684ee71 100644
 --- a/ports/webassembly/proxy_js.js

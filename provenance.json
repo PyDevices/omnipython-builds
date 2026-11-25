@@ -1,5 +1,5 @@
 {
- "upstream": "micropython/micropython main at b70ae1aca657 (v1.30.0-preview-160)",
+ "upstream": "micropython/micropython main at b9620707e369 (v1.30.0-preview-322)",
  "migrated-from": "PyDevices/cmods (patches/, wasmbridge/, variants/) on 2026-08-29",
  "patches": {
   "0001-micropython-windows-enable-networking-sockets-select-ssl-msvc.patch": {
@@ -12,25 +12,22 @@
    "sha256": "6478ac713be9b83da645dd7394e76f1c432a52a25251adf2cad945f2f4d1d998"
   },
   "0004-micropython-webassembly-allow-Asyncify-in-runPythonAsync.patch": {
-   "sha256": "a6a7faff0b3b22c4d176b8f25ad23e68a585df5c82b06a83406fca05f883863a"
+   "sha256": "fa8acc8e7708de689bc6ccca502a7151cb1014e5c1b8c69805d1e11cab06e13b"
   },
   "0005-micropython-webassembly-fix-node-hook-ccall-signatures.patch": {
    "sha256": "231fd1834fc60ac733b57c9d2be5f455966bc570d0f9d02ce6a079413d5a3ab4"
   },
   "0006-micropython-webassembly-support-soft-reinitialization.patch": {
-   "sha256": "c99cd6f86226fde8e11f2b38440e99c76cc50f692f3555ede9555887727e09fd"
+   "sha256": "c02c54190dcef9efe1fd63674e47520b82fbc8155100356d4324f027bddd603f"
   },
   "0007-micropython-webassembly-inert-jsffi-callbacks-across-reinit.patch": {
-   "sha256": "89e4ec6ac0873b130047a06428995a394363933718112e648c4f7a26d06eea93"
+   "sha256": "c882b6bb29613cfcb43f6297f97f726a21454bc7fa7bf0e0025df8baee54b9c4"
   },
   "0008-micropython-webassembly-fix-empty-single-input-lexer-eof-primer.patch": {
    "sha256": "60fd92772c5f83b1e9ad20ca27722d4ca8d580e688027a964cc7b798db0b9ad4"
   },
   "0009-micropython-esp32s3-add-SPIRAM_OCT_DEBUG-variant.patch": {
    "sha256": "4765393d799fff2ed8822769d6af31cc5e39773f04062a2fa7d9a32fa20dbe03"
-  },
-  "0010-micropython-esp32-i2s-mck-pin.patch": {
-   "sha256": "96bff6ae2079ac3bc1b14e4cb1b681ea0398569f485858581826f28e8fbf605a"
   },
   "0011-micropython-esp32-webrepl-ctrl-c-in-tight-loops.patch": {
    "sha256": "c3d6a1e8374f07e7d68eca25ce7aa4ca9146c428f56b50cceee27a963a680f08"
@@ -42,7 +39,7 @@
    "sha256": "909fbba5d4b8685cc4b589b22dd7c1c19ee1839618352b60d01f5cde3c0d4905"
   },
   "0014-micropython-esp32-tinyusb-0.21.patch": {
-   "sha256": "a220d93f73163c6edf1ecb4205b52ba5e11bc553188b3f1a96483267975e8318"
+   "sha256": "330d848c278bfefb2773eab664fca2457e3c13f1415817caf824711be61c6828"
   },
   "0015-micropython-windows-timing-module-and-idle-console.patch": {
    "sha256": "5060f06c4f2b831a28f56248f72815ab5cceba172ac6736556d6069de88879c3"
@@ -51,7 +48,7 @@
    "sha256": "6d4a43158f88785fbb1ea4cb885bfd3d435a90653a16e321186ca90ef2b5d72e"
   },
   "0017-micropython-py-makeqstrdefs-incremental-build-header-qstr.patch": {
-   "sha256": "8ef3dee1fde56ca4dffd230e09df323e0eea050cc3d96a542eb56bf4e99c2de5"
+   "sha256": "9ac33291e055b9e88977a73294bcde57116bf8b987dae609faa02e50d5eb8024"
   },
   "0018-micropython-esp32-drop-missing-usermod-include-dirs.patch": {
    "sha256": "6e46afd5af703f77e19c952d3f9a1b8fcc264fb30fdc23510a58e041598ce930"
@@ -81,7 +78,7 @@
    "sha256": "b3f0a51a2d8d387154e87ad9e5d905a444e26d5a8b73abab71efb97e3a98dd7b"
   },
   "0028-micropython-esp32-i2s-pdm-rx.patch": {
-   "sha256": "a0f69651c0bb31c06fda132e212ba1186dcb7bb913ff114d472c84d06f2e52a1"
+   "sha256": "582eeaf4c2679edac6f9c5181cba1e763b2f390352bf4264a08fd14df05103d9"
   },
   "0029-micropython-py-mkrules-cmake-short-qstr-include-paths.patch": {
    "sha256": "13ed62750d774c5fad3810936b63be45cba0549615c5ced373cfc446dba65976"
@@ -252,13 +249,16 @@
    "sha256": "ce6e474b6ee916fcd36e3878a820bac3f8f1ed3781bd6bf7543975c1f4220f37"
   },
   "0084-micropython-esp32-network-lan-builds-without-the-ethernet-mac.patch": {
-   "sha256": "4d63ebd7af3775b5b71b096f63eb60e3d929677095654c1bca658da42fcbc9ae"
+   "sha256": "93ec62371c40271794aa6e7eb3e3799144de7355649a0a3020464a059ce0dd61"
   },
   "0085-micropython-extmod-vfs-lfs2-statvfs-counts-each-directory-once.patch": {
    "sha256": "7cf550b00d75bcf3885ed798640fc31053a4d2e46e4fdaa92dd875016af0e1dc"
   },
   "0086-micropython-esp32-nvs-closes-its-handle-when-collected.patch": {
    "sha256": "120062d4ea8b024dd48423bced664a39a8ed06bdfedd97d0e530b71ae4db71e3"
+  },
+  "0087-micropython-py-the-ll-checks-pragma-needs-the-checks-plugin.patch": {
+   "sha256": "6b513ea552f44a9cf8ddfcae638734b01b858db7060bebbd1566760374c86255"
   }
  },
  "tinyusb_patches": {
@@ -272,12 +272,5 @@
    "sha256": "e8dec7da4b6b71e1cb4b9edeb9a42d4101660a4498aeaa850f79cb26b2545ac8"
   }
  },
- "esp_hosted_patches": {
-  "0001-transport_drv-drop-a-packet-when-there-is-no-buffer.patch": {
-   "sha256": "8511e218839f0dfce56ac057d966264fabf2b595cf3a8068ea98ee43cd43e2b2"
-  },
-  "0002-sdio_drv-drop-a-received-packet-when-there-is-no-buffer.patch": {
-   "sha256": "3924bc193dc558efc705ed8bf2a48e5b1f549e91f9e58cb54dbd769a2e6e61f4"
-  }
- }
+ "esp_hosted_patches": {}
 }

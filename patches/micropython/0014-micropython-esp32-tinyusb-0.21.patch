@@ -58,8 +58,14 @@ already locked for as long as the source is the same, and here the
 source is. Without the lockfile change a target would quietly go on
 building 0.18.
 ---
+ ports/esp32/lockfiles/dependencies.lock.esp32p4 |  5 +++--
+ ports/esp32/lockfiles/dependencies.lock.esp32s2 |  5 +++--
+ ports/esp32/lockfiles/dependencies.lock.esp32s3 |  5 +++--
+ ports/esp32/main/idf_component.yml              | 10 +++++++---
+ 4 files changed, 16 insertions(+), 9 deletions(-)
+
 diff --git a/ports/esp32/lockfiles/dependencies.lock.esp32p4 b/ports/esp32/lockfiles/dependencies.lock.esp32p4
-index 18b3ddd4b..cd372e135 100644
+index b2548a617..687bb0430 100644
 --- a/ports/esp32/lockfiles/dependencies.lock.esp32p4
 +++ b/ports/esp32/lockfiles/dependencies.lock.esp32p4
 @@ -64,7 +64,7 @@ dependencies:
@@ -78,11 +84,11 @@ index 18b3ddd4b..cd372e135 100644
 -    version: e4c0ec3caab3d9c25374de7047653b9ced8f14ff
 +    - esp32s31
 +    version: 5c5c660317943820d49ce5c188f1bd60cd8aade6
-   idf:
-     source:
-       type: idf
+   espressif/wifi_remote_over_eppp:
+     component_hash: 1fd6968af20f0b19e421f6b519b0a8caf81d689afc3783b564c28559e45f66ef
+     dependencies:
 diff --git a/ports/esp32/lockfiles/dependencies.lock.esp32s2 b/ports/esp32/lockfiles/dependencies.lock.esp32s2
-index fac133418..fd18f806e 100644
+index f75d5d680..1f98569f7 100644
 --- a/ports/esp32/lockfiles/dependencies.lock.esp32s2
 +++ b/ports/esp32/lockfiles/dependencies.lock.esp32s2
 @@ -10,7 +10,7 @@ dependencies:
@@ -105,7 +111,7 @@ index fac133418..fd18f806e 100644
      source:
        type: idf
 diff --git a/ports/esp32/lockfiles/dependencies.lock.esp32s3 b/ports/esp32/lockfiles/dependencies.lock.esp32s3
-index a325e38d9..16b46383e 100644
+index b2825d5e8..e541a7bb1 100644
 --- a/ports/esp32/lockfiles/dependencies.lock.esp32s3
 +++ b/ports/esp32/lockfiles/dependencies.lock.esp32s3
 @@ -10,7 +10,7 @@ dependencies:
@@ -128,7 +134,7 @@ index a325e38d9..16b46383e 100644
      source:
        type: idf
 diff --git a/ports/esp32/main/idf_component.yml b/ports/esp32/main/idf_component.yml
-index ddd7cb2c4..3c352a833 100644
+index 3913e2861..ce1265022 100644
 --- a/ports/esp32/main/idf_component.yml
 +++ b/ports/esp32/main/idf_component.yml
 @@ -5,10 +5,14 @@ dependencies:
@@ -149,3 +155,6 @@ index ddd7cb2c4..3c352a833 100644
    espressif/esp_hosted:
      rules:
        - if: "target == esp32p4"
+-- 
+2.43.0
+

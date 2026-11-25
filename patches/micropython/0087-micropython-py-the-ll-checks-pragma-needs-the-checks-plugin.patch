@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 00:00:00 -0600
+Subject: [PATCH] py/mpconfig: emit the MPCHECKS pragma only when the checks
+ plugin is loaded.
+
+mpconfig.h emits `#pragma MPCHECKS mpprint_support_ll` on GCC 12 and later
+whenever mp_printf handles "ll", but only the checks plugin knows that
+pragma. mkrules.mk loads the plugin only when the compiler ships its plugin
+headers, so a build without them fails with -Werror=unknown-pragmas. That
+is every MinGW build whose compiler lacks the headers: on Windows long is
+32 bits, so MP_INT_MAX > LONG_MAX turns "ll" support on and the pragma is
+emitted while building mpy-cross and the windows port.
+
+gccplugin.mk now defines MICROPY_CHECKS_PLUGIN beside -fplugin, and the
+pragma is emitted only when it's set.
+
+Based-on: micropython b9620707e (v1.30.0-preview-322)
+---
+diff --git a/py/gccplugin.mk b/py/gccplugin.mk
+index e2414783e..a9d640a39 100644
+--- a/py/gccplugin.mk
++++ b/py/gccplugin.mk
+@@ -13,7 +13,7 @@ CHECKS_EXTENSION = .dll
+ endif
+ 
+ CHECKS_PLUGIN :=  $(BUILD)/micropython_checks$(CHECKS_EXTENSION)
+-CFLAGS += -fplugin=$(CHECKS_PLUGIN)
++CFLAGS += -fplugin=$(CHECKS_PLUGIN) -DMICROPY_CHECKS_PLUGIN=1
+ 
+ .PHONY: plugin
+ plugin: $(CHECKS_PLUGIN)
+diff --git a/py/mpconfig.h b/py/mpconfig.h
+index 9ebf1b2e4..3bdce7bc8 100644
+--- a/py/mpconfig.h
++++ b/py/mpconfig.h
+@@ -2567,7 +2567,9 @@ typedef time_t mp_timestamp_t;
+ #endif
+ #endif
+ 
+-#if __GNUC__ >= 12 && MICOPY_PRINTF_LL_FORMAT
++// Only the checks plugin knows this pragma: a build without it (no plugin
++// headers for the compiler) would fail on an unknown pragma.
++#if __GNUC__ >= 12 && MICOPY_PRINTF_LL_FORMAT && defined(MICROPY_CHECKS_PLUGIN)
+ #pragma MPCHECKS mpprint_support_ll
+ #endif
+ 

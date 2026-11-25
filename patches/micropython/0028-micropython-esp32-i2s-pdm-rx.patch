@@ -23,6 +23,12 @@ the hardware filter build exactly as before.
 
 Based-on: micropython 0fd6c573e (tag v1.29.0)
 ---
+ docs/library/machine.I2S.rst |  8 ++++
+ extmod/machine_i2s.c         |  9 ++++
+ ports/esp32/machine_i2s.c    | 91 ++++++++++++++++++++++++++++++++----
+ ports/esp32/mpconfigport.h   |  5 ++
+ 4 files changed, 104 insertions(+), 9 deletions(-)
+
 diff --git a/docs/library/machine.I2S.rst b/docs/library/machine.I2S.rst
 index f2704e9a3..a9b59279e 100644
 --- a/docs/library/machine.I2S.rst
@@ -71,7 +77,7 @@ index 453f84e50..a4c8cb4e2 100644
      { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(MONO) },
  };
 diff --git a/ports/esp32/machine_i2s.c b/ports/esp32/machine_i2s.c
-index 92a5ebe9b..80903e488 100644
+index c6a670138..6a43bf23c 100644
 --- a/ports/esp32/machine_i2s.c
 +++ b/ports/esp32/machine_i2s.c
 @@ -29,6 +29,9 @@
@@ -84,9 +90,9 @@ index 92a5ebe9b..80903e488 100644
  #include "freertos/FreeRTOS.h"
  #include "freertos/task.h"
  #include "freertos/queue.h"
-@@ -78,6 +81,9 @@ typedef struct _machine_i2s_obj_t {
-     mp_hal_pin_obj_t mck;
-     #endif
+@@ -76,6 +79,9 @@ typedef struct _machine_i2s_obj_t {
+     mp_hal_pin_obj_t ws;
+     mp_hal_pin_obj_t sd;
      i2s_dir_t mode;
 +    #if MICROPY_PY_MACHINE_I2S_PDM_RX
 +    bool pdm; // receiving from a PDM microphone: mode is I2S_DIR_RX
@@ -94,7 +100,7 @@ index 92a5ebe9b..80903e488 100644
      i2s_data_bit_width_t bits;
      format_t format;
      int32_t rate;
-@@ -125,8 +131,9 @@ static int8_t get_frame_mapping_index(i2s_data_bit_width_t bits, format_t format
+@@ -123,8 +129,9 @@ static int8_t get_frame_mapping_index(i2s_data_bit_width_t bits, format_t format
      }
  }
  
@@ -106,7 +112,7 @@ index 92a5ebe9b..80903e488 100644
          return bits;
      } else { // Master Rx
          // read 32 bit samples for I2S hardware.  e.g. MEMS microphones
-@@ -134,8 +141,8 @@ static i2s_data_bit_width_t get_dma_bits(uint8_t mode, i2s_data_bit_width_t bits
+@@ -132,8 +139,8 @@ static i2s_data_bit_width_t get_dma_bits(uint8_t mode, i2s_data_bit_width_t bits
      }
  }
  
@@ -117,7 +123,7 @@ index 92a5ebe9b..80903e488 100644
          if (format == MONO) {
              return I2S_SLOT_MODE_MONO;
          } else {  // STEREO
-@@ -147,10 +154,10 @@ static i2s_slot_mode_t get_dma_format(uint8_t mode, format_t format) {
+@@ -145,10 +152,10 @@ static i2s_slot_mode_t get_dma_format(uint8_t mode, format_t format) {
      }
  }
  
@@ -130,7 +136,7 @@ index 92a5ebe9b..80903e488 100644
  
      uint32_t dma_buf_count = ibuf / (DMA_BUF_LEN_IN_I2S_FRAMES * dma_frame_size_in_bytes);
  
-@@ -159,6 +166,26 @@ static uint32_t get_dma_buf_count(uint8_t mode, i2s_data_bit_width_t bits, forma
+@@ -157,6 +164,26 @@ static uint32_t get_dma_buf_count(uint8_t mode, i2s_data_bit_width_t bits, forma
  
  static uint32_t fill_appbuf_from_dma(machine_i2s_obj_t *self, mp_buffer_info_t *appbuf) {
  
@@ -157,7 +163,14 @@ index 92a5ebe9b..80903e488 100644
      // copy audio samples from DMA memory to the app buffer
      // audio samples are read from DMA memory in chunks
      // loop, reading and copying chunks until the app buffer is filled
-@@ -321,10 +348,20 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -309,15 +336,26 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+     // are Pins valid?
+     int8_t mck = args[ARG_mck].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_mck].u_obj);
+     int8_t sck = args[ARG_sck].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_sck].u_obj);
+-    int8_t ws = args[ARG_ws].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_ws].u_obj);
++    // ws is left out (MP_OBJ_NULL) for PDM_RX, which has no word select
++    int8_t ws = args[ARG_ws].u_obj == mp_const_none || args[ARG_ws].u_obj == MP_OBJ_NULL ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_ws].u_obj);
+     int8_t sd = args[ARG_sd].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_sd].u_obj);
  
      // is Mode valid?
      int8_t mode = args[ARG_mode].u_int;
@@ -172,13 +185,13 @@ index 92a5ebe9b..80903e488 100644
          (mode != (MICROPY_PY_MACHINE_I2S_CONSTANT_TX))) {
          mp_raise_ValueError(MP_ERROR_TEXT("invalid mode"));
      }
-+    if (!pdm && ws == -1) {
++    if (!pdm && args[ARG_ws].u_obj == MP_OBJ_NULL) {
 +        mp_raise_ValueError(MP_ERROR_TEXT("ws is required"));
 +    }
  
      // is Bits valid?
      i2s_data_bit_width_t bits = args[ARG_bits].u_int;
-@@ -340,6 +377,16 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -333,6 +371,16 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
          mp_raise_ValueError(MP_ERROR_TEXT("invalid format"));
      }
  
@@ -195,9 +208,9 @@ index 92a5ebe9b..80903e488 100644
      // is Rate valid?
      // Not checked:  ESP-IDF I2S API does not indicate a valid range for sample rate
  
-@@ -353,6 +400,9 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
-     self->mck = mck;
-     #endif
+@@ -344,6 +392,9 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+     self->ws = ws;
+     self->sd = sd;
      self->mode = mode;
 +    #if MICROPY_PY_MACHINE_I2S_PDM_RX
 +    self->pdm = pdm;
@@ -205,7 +218,7 @@ index 92a5ebe9b..80903e488 100644
      self->bits = bits;
      self->format = format;
      self->rate = args[ARG_rate].u_int;
-@@ -370,7 +420,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -361,7 +412,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
      }
  
      i2s_chan_config_t chan_config = I2S_CHANNEL_DEFAULT_CONFIG(self->i2s_id, I2S_ROLE_MASTER);
@@ -214,7 +227,7 @@ index 92a5ebe9b..80903e488 100644
      chan_config.dma_frame_num = DMA_BUF_LEN_IN_I2S_FRAMES;
      chan_config.auto_clear = true;
  
-@@ -380,7 +430,29 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -371,7 +422,29 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
          check_esp_err(i2s_new_channel(&chan_config, NULL, &self->i2s_chan_handle));
      }
  
@@ -246,11 +259,11 @@ index 92a5ebe9b..80903e488 100644
  
      i2s_std_config_t std_cfg = {
 diff --git a/ports/esp32/mpconfigport.h b/ports/esp32/mpconfigport.h
-index 6a6ebff25..e146ef2bc 100644
+index 8cb751e8e..1c9166423 100644
 --- a/ports/esp32/mpconfigport.h
 +++ b/ports/esp32/mpconfigport.h
-@@ -163,6 +163,11 @@
- #define MICROPY_PY_MACHINE_I2S_MCK          (1)
+@@ -162,6 +162,11 @@
+ #define MICROPY_PY_MACHINE_I2S_FINALISER    (1)
  #define MICROPY_PY_MACHINE_I2S_CONSTANT_RX  (I2S_DIR_RX)
  #define MICROPY_PY_MACHINE_I2S_CONSTANT_TX  (I2S_DIR_TX)
 +// PDM microphones: I2S.PDM_RX, on chips whose I2S converts PDM to PCM itself.
@@ -258,6 +271,9 @@ index 6a6ebff25..e146ef2bc 100644
 +#define MICROPY_PY_MACHINE_I2S_PDM_RX       (SOC_I2S_SUPPORTS_PDM_RX && SOC_I2S_SUPPORTS_PDM2PCM)
 +#endif
 +#define MICROPY_PY_MACHINE_I2S_CONSTANT_PDM_RX (I2S_DIR_RX | BIT(2))
+ #define MICROPY_PY_MACHINE_I2S_MCK          (1)
  #define MICROPY_PY_MACHINE_UART             (1)
  #define MICROPY_PY_MACHINE_UART_INCLUDEFILE "ports/esp32/machine_uart.c"
- #define MICROPY_PY_MACHINE_UART_SENDBREAK   (1)
+-- 
+2.43.0
+

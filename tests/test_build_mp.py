@@ -1146,9 +1146,10 @@ class Esp32KeepFs(unittest.TestCase):
         # The app partitions the release workflow's set of 2026-11-09 shipped with,
         # each grown by autosize but the DEV-KIT's, and the Touch-LCD-4B's grown
         # 256 KB more for esp_cam_sensor 2.7.0's JX-H63P.
-        # The P4 cells have since grown to the P4X-EYE's 9 MB slot for tflite and vision.
-        shipped = {"mp-p4-devkit": 0x900000, "mp-p4-panel": 0x900000, "mp-s3-lcd7": 0x540000,
-                   "mp-s3-lcd43": 0x540000, "mp-p4-eye": 0x900000}
+        # The P4 cells have since grown to a 9 MB slot for tflite and vision, then to
+        # 9,344 KB for MicroPython at v1.30.0-preview-322 with esp_hosted 2.13.1.
+        shipped = {"mp-p4-devkit": 0x920000, "mp-p4-panel": 0x920000, "mp-s3-lcd7": 0x540000,
+                   "mp-s3-lcd43": 0x540000, "mp-p4-eye": 0x920000}
         for c in rf.CELLS:
             if c["interpreter"] != "micropython" or c["kind"] != "esp32" or "fs" not in c:
                 continue  # a cell with no fs autosizes its filesystem: nothing is kept
@@ -1158,7 +1159,7 @@ class Esp32KeepFs(unittest.TestCase):
             self.assertEqual(parts["factory"], (0x10000, shipped[c["id"]]), c["id"])
 
     def test_a_table_kept_at_its_own_size_is_unchanged(self):
-        for variant, fs, mb in (("ESP32_GENERIC_P4/P4X_EYE", 0x6F0000, 16), ("ESP32_GENERIC/AUDIO_KIT", 0x18000, 4)):
+        for variant, fs, mb in (("ESP32_GENERIC_P4/P4X_EYE", 0x6D0000, 16), ("ESP32_GENERIC/AUDIO_KIT", 0x18000, 4)):
             src = build_mp.VARIANTS_DIR / "esp32" / variant / "partitions.csv"
             before = {r[0]: (int(r[3], 0), int(r[4], 0)) for r in build_mp.esp32_table_rows(src)}
             self.assertEqual(self.keep(fs, mb, src=src), before, variant)
@@ -1632,9 +1633,14 @@ class MicropythonLibPatches(unittest.TestCase):
         patches = apply_patches.lib_series()
         self.assertTrue(patches)
         files = apply_patches.lib_files(patches)
-        self.assertIn("micropython/usb/usb-device-midi/usb/device/midi.py", files)
-        pin = "ee4bb8ff139e24c42b739935fbd8ec7c4d061e02"  # the submodule at b70ae1aca
+        self.assertIn("micropython/net/webrepl/webrepl.py", files)
         mp = Path(build_mp.__file__).resolve().parent / "micropython"
+        # The submodule's commit at the locked MicroPython pin, so the test follows a pin move.
+        tree = subprocess.run(["git", "-C", str(mp), "ls-tree", build_mp.pin(build_mp.pins.MICROPYTHON).ref,
+                               "lib/micropython-lib"], capture_output=True, text=True).stdout.split()
+        if len(tree) < 3:
+            self.skipTest("no MicroPython checkout at the pin")
+        pin = tree[2]
         with tempfile.TemporaryDirectory() as tmp:
             lib = Path(tmp)
 
@@ -1654,13 +1660,13 @@ class MicropythonLibPatches(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 apply_patches.apply_lib(lib, patches)
             self.assertEqual(out.getvalue().count("applied "), len(patches))
-            midi = (lib / "micropython/usb/usb-device-midi/usb/device/midi.py").read_text()
-            self.assertIn("_on_rx_schedule", midi)
+            webrepl = (lib / "micropython/net/webrepl/webrepl.py").read_text()
+            self.assertIn("def _keepalive(cl):", webrepl)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 apply_patches.apply_lib(lib, patches)
             self.assertEqual(out.getvalue().count("already in micropython-lib"), len(patches))
-            self.assertEqual((lib / "micropython/usb/usb-device-midi/usb/device/midi.py").read_text(), midi)
+            self.assertEqual((lib / "micropython/net/webrepl/webrepl.py").read_text(), webrepl)
 
 
 class Coredump(unittest.TestCase):

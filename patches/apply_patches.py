@@ -104,9 +104,26 @@ def _quiet(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
-def lib_applied(lib, patch):
-    """True when micropython-lib's tree at `lib` already has the patch."""
-    return _quiet(lib, "apply", "--reverse", "--check", str(patch)) == 0
+def lib_applied(lib, patches):
+    """The patches micropython-lib's tree at `lib` already has, as a set.
+
+    Each is undone in a scratch copy of the files the series touches, the last
+    patch first, so a patch is recognised under a later one that changes the
+    same lines (0005 sits on 0004's): reverse-checking it against the tree as
+    it stands would fail and call it missing."""
+    patches = list(patches)
+    have = set()
+    with tempfile.TemporaryDirectory() as scratch:
+        copy = Path(scratch)
+        for name in lib_files(patches):
+            if (Path(lib) / name).is_file():
+                (copy / name).parent.mkdir(parents=True, exist_ok=True)
+                (copy / name).write_bytes((Path(lib) / name).read_bytes())
+        git(copy, "init", "--quiet")
+        for patch in reversed(patches):
+            if _quiet(copy, "apply", "--reverse", str(patch)) == 0:
+                have.add(patch)
+    return have
 
 
 def lib_files(patches):
@@ -119,9 +136,10 @@ def lib_files(patches):
 
 
 def apply_lib(lib, patches, where=LIB):
+    have = lib_applied(lib, patches)
     for patch in patches:
         name = patch.relative_to(REPO)
-        if lib_applied(lib, patch):
+        if patch in have:
             print(f"already in {where.name}: {name}", flush=True)
         elif git(lib, "apply", str(patch), check=False) != 0:
             sys.exit(f"apply_patches: {name} does not apply to {where}")
@@ -152,7 +170,8 @@ def lib_record(mp):
     """micropython-lib's commit and the patches of ours its tree carries, for a build's record."""
     lib = Path(mp) / LIB
     commit = git(lib, "rev-parse", "--short=12", "HEAD", capture=True)
-    return {"commit": commit, "patches": [p.name for p in lib_series() if lib_applied(lib, p)]}
+    have = lib_applied(lib, lib_series())
+    return {"commit": commit, "patches": [p.name for p in lib_series() if p in have]}
 
 
 def series_id(patches):

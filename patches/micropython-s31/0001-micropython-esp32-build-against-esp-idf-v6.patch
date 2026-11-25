@@ -3,18 +3,18 @@ From: cumin <13809292481@163.com>
 Date: Wed, 30 Sep 2026 17:24:10 +0800
 Subject: [PATCH 1/2] esp32: build against ESP-IDF v6 (micropython#19725).
 
-The ESP-IDF v6 compatibility commits of micropython/micropython#19725, as
-they stand in #19726 at 0b9512f475bd (19e685eca..8634a282a), squashed and
-rebased onto the micropython pin with the PyDevices overlay applied. Only
-the ESP32-S31 build carries this patch.
+The ESP-IDF v6 compatibility commits of micropython/micropython#19725 at
+e6a738866578 (b9620707e..e6a738866, rebased by upstream onto the micropython
+pin), squashed and applied on top of the PyDevices overlay. Only the
+ESP32-S31 build carries this patch.
 
-Left out: the CI workflow, tools/ci.sh and the component lockfiles of the
-other chips, which no S31 build reads. The tinyusb entry of
+Left out: the CI workflow and the component lockfiles of the other chips,
+which no S31 build reads. The tinyusb entry of
 ports/esp32/main/idf_component.yml keeps the overlay's TinyUSB 0.21 here;
 the next patch moves it, as upstream's does. The P4 cameraif components
-stay in the manifest.
+stay in the manifest, and network_lan.c keeps the overlay's
+CONFIG_ETH_USE_ESP32_EMAC guard around upstream's per-PHY ones.
 ---
- extmod/berkeley-db/berkeley_db_config_port.h  |  15 +
  extmod/modcryptolib.c                         |   8 +
  extmod/modhashlib.c                           | 121 ++++-
  extmod/modnetwork.c                           |   2 +-
@@ -22,56 +22,29 @@ stay in the manifest.
  ports/esp32/CMakeLists.txt                    |  12 +
  ports/esp32/README.md                         |   5 +-
  ports/esp32/adc.h                             |   7 +
- .../boards/ESP32_GENERIC/manifest_d2wd.py     |  11 +
- .../ESP32_GENERIC/mpconfigvariant_D2WD.cmake  |   6 +
- .../esp32/boards/ESP32_GENERIC/sdkconfig.d2wd |  15 +
- ports/esp32/esp32_common.cmake                |  37 +-
+ .../boards/ESP32_GENERIC/manifest_d2wd.py     |  19 +-
+ .../esp32/boards/ESP32_GENERIC/sdkconfig.d2wd |  12 +
+ ports/esp32/esp32_common.cmake                |  39 +-
  ports/esp32/esp32_pcnt.c                      | 465 +++++++++++++-----
+ ports/esp32/machine_i2c_target.c              |  10 +
  ports/esp32/machine_i2s.c                     |  14 +-
  ports/esp32/machine_pwm.c                     |  15 +-
  ports/esp32/machine_rtc.c                     |   6 +-
  ports/esp32/machine_sdcard.c                  |   6 +-
  ports/esp32/machine_timer.c                   |   8 +
  ports/esp32/machine_touchpad.c                |   5 +
- ports/esp32/main.c                            |  14 +-
+ ports/esp32/main.c                            |   6 +
  ports/esp32/main/idf_component.yml            |  30 +-
- ports/esp32/modespnow.c                       |  41 ++
+ ports/esp32/modespnow.c                       |  46 +-
  ports/esp32/modmachine.c                      |  10 +-
  ports/esp32/modnetwork.h                      |  30 ++
  ports/esp32/modnetwork_globals.h              |   6 +
  ports/esp32/network_lan.c                     |  43 +-
- ports/esp32/network_wlan.c                    |  12 +-
+ ports/esp32/network_wlan.c                    |   8 +
  ports/esp32/network_wlan_csi.c                |   5 +-
  ports/esp32/uart.c                            |   5 +
- 29 files changed, 847 insertions(+), 148 deletions(-)
- create mode 100644 ports/esp32/boards/ESP32_GENERIC/manifest_d2wd.py
+ 28 files changed, 834 insertions(+), 150 deletions(-)
 
-diff --git a/extmod/berkeley-db/berkeley_db_config_port.h b/extmod/berkeley-db/berkeley_db_config_port.h
-index 749beb537..735fa0a15 100644
---- a/extmod/berkeley-db/berkeley_db_config_port.h
-+++ b/extmod/berkeley-db/berkeley_db_config_port.h
-@@ -5,6 +5,21 @@
- #define abort abort_
- #define virt_fd_t void *
- 
-+// berkeley-db 1.xx uses the legacy sys/cdefs.h macros (__P, __BEGIN_DECLS,
-+// __END_DECLS) which some toolchains no longer provide (eg the newlib used
-+// by ESP-IDF v6). db.h includes this file (as "berkeley-db/config.h") after
-+// <sys/cdefs.h> and before its first use of these macros, so provide them
-+// here when missing. Toolchains that do define them are unaffected.
-+#ifndef __BEGIN_DECLS
-+#define __BEGIN_DECLS
-+#endif
-+#ifndef __END_DECLS
-+#define __END_DECLS
-+#endif
-+#ifndef __P
-+#define __P(protos) protos
-+#endif
-+
- #ifdef MICROPY_BERKELEY_DB_DEFPSIZE
- #define DEFPSIZE MICROPY_BERKELEY_DB_DEFPSIZE
- #endif
 diff --git a/extmod/modcryptolib.c b/extmod/modcryptolib.c
 index bf72f4f46..3491a053a 100644
 --- a/extmod/modcryptolib.c
@@ -293,10 +266,10 @@ index b3e7285f1..3bbbe9e0e 100644
  static MP_DEFINE_CONST_FUN_OBJ_2(hashlib_md5_update_obj, hashlib_md5_update);
  static MP_DEFINE_CONST_FUN_OBJ_1(hashlib_md5_digest_obj, hashlib_md5_digest);
 diff --git a/extmod/modnetwork.c b/extmod/modnetwork.c
-index 952632c8b..f5277b01f 100644
+index 19a40e045..e571bc9c7 100644
 --- a/extmod/modnetwork.c
 +++ b/extmod/modnetwork.c
-@@ -68,7 +68,7 @@ extern const struct _mp_obj_type_t mod_network_nic_type_ncm;
+@@ -72,7 +72,7 @@ extern const struct _mp_obj_type_t mod_network_nic_type_ncm;
  ///
  /// This module provides network drivers and routing configuration.
  
@@ -450,16 +423,16 @@ index c739368c5..1377a468d 100644
  message("Checking lockfile contents...")
  execute_process(COMMAND git diff --exit-code ${LOCKFILE_PATH} WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
 diff --git a/ports/esp32/README.md b/ports/esp32/README.md
-index 43ed6d14b..ba94700e7 100644
+index 31d1bc6bb..4da7f5e33 100644
 --- a/ports/esp32/README.md
 +++ b/ports/esp32/README.md
 @@ -53,7 +53,10 @@ build environment and toolchains needed to build the firmware.
  
  The ESP-IDF changes quickly and MicroPython only supports certain versions. The
- current recommended version of ESP-IDF for MicroPython is v5.5.5. MicroPython
--also supports v5.3, v5.4, v5.4.1, v5.4.2, v5.5.1, v5.5.2 and v5.5.4.
-+also supports v5.3, v5.4, v5.4.1, v5.4.2, v5.5.1, v5.5.2, v5.5.4, and v6.1
-+(ESP-IDF v6 is tested with v6.1; the committed lockfiles in the `lockfiles/`
+ current recommended version of ESP-IDF for MicroPython is v5.5.6. MicroPython
+-also supports v5.3, v5.4, v5.4.1, v5.4.2, v5.5.1, v5.5.2, v5.5.4, and v5.5.5.
++also supports v5.3, v5.4, v5.4.1, v5.4.2, v5.5.1, v5.5.2, v5.5.4, v5.5.5
++and v6.1 (ESP-IDF v6 is tested with v6.1; the committed lockfiles in the `lockfiles/`
 +subdirectory pin the 5.x component versions, and are only enforced on the
 +newest 5.x release).
  
@@ -484,53 +457,49 @@ index ebf7fcc21..2ee6459a2 100644
  #define ADC_ATTEN_COUNT SOC_ADC_ATTEN_NUM
  #define ADC_ATTEN_MIN ADC_ATTEN_DB_0
 diff --git a/ports/esp32/boards/ESP32_GENERIC/manifest_d2wd.py b/ports/esp32/boards/ESP32_GENERIC/manifest_d2wd.py
-new file mode 100644
-index 000000000..e4b945afe
---- /dev/null
+index db69388cc..edd264067 100644
+--- a/ports/esp32/boards/ESP32_GENERIC/manifest_d2wd.py
 +++ b/ports/esp32/boards/ESP32_GENERIC/manifest_d2wd.py
-@@ -0,0 +1,11 @@
-+# D2WD variant manifest: asyncio and the hardware libs only. The packages
-+# dropped relative to boards/manifest.py (umqtt, aioespnow, upysh and the
-+# networking bundle) install from micropython-lib via mip when needed.
+@@ -1,16 +1,21 @@
+ # D2WD variant manifest: the 2MiB build has no room for the full frozen set
+ # Compared to boards/manifest.py this removes:
++# - aioespnow
+ # - dht
+ # - ds18x20
++# - onewire
++# - umqtt.robust
++# - umqtt.simple
++# - upysh
++# - webrepl
+ # These can instead be installed from micropython-lib via mip when needed.
+ 
+-# Useful networking-related packages.
+-require("bundle-networking")
 +freeze("$(PORT_DIR)/modules")
 +include("$(MPY_DIR)/extmod/asyncio")
-+
-+# Require some micropython-lib modules.
-+require("dht")
-+require("ds18x20")
-+require("neopixel")
-+require("onewire")
-diff --git a/ports/esp32/boards/ESP32_GENERIC/mpconfigvariant_D2WD.cmake b/ports/esp32/boards/ESP32_GENERIC/mpconfigvariant_D2WD.cmake
-index 8bb6b494b..defc614d1 100644
---- a/ports/esp32/boards/ESP32_GENERIC/mpconfigvariant_D2WD.cmake
-+++ b/ports/esp32/boards/ESP32_GENERIC/mpconfigvariant_D2WD.cmake
-@@ -3,6 +3,12 @@ list(APPEND SDKCONFIG_DEFAULTS
-     boards/ESP32_GENERIC/sdkconfig.d2wd
- )
  
-+# The 2MiB D2WD build has no room for the full frozen set alongside BLE under
-+# IDF v6. The slim manifest keeps asyncio and the hardware libs; everything
-+# dropped here (umqtt, aioespnow, upysh and the networking bundle) installs
-+# from micropython-lib via mip when needed.
-+set(MICROPY_FROZEN_MANIFEST ${MICROPY_BOARD_DIR}/manifest_d2wd.py)
-+
- list(APPEND MICROPY_DEF_BOARD
-     MICROPY_HW_MCU_NAME="ESP32-D2WD"
-     # Disable some options to reduce firmware size.
+ # Require some micropython-lib modules.
+-require("aioespnow")
+ require("neopixel")
+-require("onewire")
+-require("umqtt.robust")
+-require("umqtt.simple")
+-require("upysh")
++require("mip")
++require("ntptime")
++require("ssl")
++require("requests")
 diff --git a/ports/esp32/boards/ESP32_GENERIC/sdkconfig.d2wd b/ports/esp32/boards/ESP32_GENERIC/sdkconfig.d2wd
-index 017a6c772..ad5423ccd 100644
+index 017a6c772..95948b36d 100644
 --- a/ports/esp32/boards/ESP32_GENERIC/sdkconfig.d2wd
 +++ b/ports/esp32/boards/ESP32_GENERIC/sdkconfig.d2wd
-@@ -1,3 +1,18 @@
+@@ -1,3 +1,15 @@
  # Setting specific to d2wd
  CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
  CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 +
-+# D2WD only has 2MiB of embedded flash. Disable niche stacks so BLE still fits
-+# in the factory partition under IDF v6 (there is not enough space for both):
-+# DTLS (CoAP-style UDP security), lwIP PPP (cellular modems) and the mbedTLS
-+# PSK key exchanges all serve much smaller audiences than BLE on this part.
-+# These overrides only apply to the D2WD variant; other boards are unaffected.
++# D2WD only has 2MiB of embedded flash. Disable lesser-used features to fit
++# in the smaller factory partition (particularly necessary with ESP-IDF v6):
 +CONFIG_MBEDTLS_SSL_PROTO_DTLS=n
 +CONFIG_LWIP_PPP_SUPPORT=n
 +CONFIG_LWIP_PPP_PAP_SUPPORT=n
@@ -541,7 +510,7 @@ index 017a6c772..ad5423ccd 100644
 +CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_PSK=n
 +CONFIG_MBEDTLS_KEY_EXCHANGE_RSA_PSK=n
 diff --git a/ports/esp32/esp32_common.cmake b/ports/esp32/esp32_common.cmake
-index baa037c3e..574e1f2c1 100644
+index baa037c3e..581115105 100644
 --- a/ports/esp32/esp32_common.cmake
 +++ b/ports/esp32/esp32_common.cmake
 @@ -70,11 +70,17 @@ list(APPEND MICROPY_SOURCE_LIB
@@ -607,6 +576,15 @@ index baa037c3e..574e1f2c1 100644
  if($ENV{IDF_VERSION} VERSION_GREATER_EQUAL "5.4")
      list(APPEND IDF_COMPONENTS
          esp_driver_touch_sens)
+@@ -299,6 +330,8 @@ target_compile_options(${MICROPY_TARGET} PUBLIC
+ # importantly the optimisation level.  So set them here.
+ idf_build_get_property(idf_compile_options COMPILE_OPTIONS)
+ target_compile_options(usermod INTERFACE ${idf_compile_options})
++idf_build_get_property(idf_compile_definitions COMPILE_DEFINITIONS)
++target_compile_definitions(usermod INTERFACE ${idf_compile_definitions})
+ 
+ # Additional include directories needed for private NimBLE headers.
+ target_include_directories(${MICROPY_TARGET} PUBLIC
 diff --git a/ports/esp32/esp32_pcnt.c b/ports/esp32/esp32_pcnt.c
 index 36d43ab45..5808e7188 100644
 --- a/ports/esp32/esp32_pcnt.c
@@ -1310,8 +1288,38 @@ index 36d43ab45..5808e7188 100644
      { MP_ROM_QSTR(MP_QSTR_IRQ_ZERO),        MP_ROM_INT(PCNT_EVT_ZERO) },
      { MP_ROM_QSTR(MP_QSTR_IRQ_THRESHOLD0),  MP_ROM_INT(PCNT_EVT_THRES_0) },
      { MP_ROM_QSTR(MP_QSTR_IRQ_THRESHOLD1),  MP_ROM_INT(PCNT_EVT_THRES_1) },
+diff --git a/ports/esp32/machine_i2c_target.c b/ports/esp32/machine_i2c_target.c
+index 653d8af90..894a16917 100644
+--- a/ports/esp32/machine_i2c_target.c
++++ b/ports/esp32/machine_i2c_target.c
+@@ -30,7 +30,13 @@
+ #include "machine_i2c.h"
+ #include "driver/i2c_slave.h"
+ #include "esp_intr_alloc.h"
++#include "esp_idf_version.h"
++// i2c_periph_signal moved from soc/ to hal/ (esp_hal_i2c component) in IDF v6.
++#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
++#include "hal/i2c_periph.h"
++#else
+ #include "soc/i2c_periph.h"
++#endif
+ 
+ // These headers are needed to call i2c_ll_txfifo_rst().
+ #include "hal/i2c_ll.h"
+@@ -55,7 +61,11 @@ static machine_i2c_target_obj_t machine_i2c_target_obj[SOC_HP_I2C_NUM];
+ 
+ // Depth of the IDF send/receive buffers when no backing memory is given.  The
+ // IDF cannot create zero-sized buffers, so use the size of the hardware FIFO.
++#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
++#define I2C_TARGET_NO_MEM_BUF_DEPTH (I2C_LL_GET(FIFO_LEN))
++#else
+ #define I2C_TARGET_NO_MEM_BUF_DEPTH (SOC_I2C_FIFO_LEN)
++#endif
+ 
+ /******************************************************************************/
+ // ESP-IDF hardware bindings
 diff --git a/ports/esp32/machine_i2s.c b/ports/esp32/machine_i2s.c
-index 80903e488..2c02c0b8e 100644
+index d93034013..cf834bd8d 100644
 --- a/ports/esp32/machine_i2s.c
 +++ b/ports/esp32/machine_i2s.c
 @@ -52,6 +52,14 @@
@@ -1336,9 +1344,9 @@ index 80903e488..2c02c0b8e 100644
 -    i2s_port_t i2s_id;
 +    int i2s_id;
      i2s_chan_handle_t i2s_chan_handle;
+     mp_hal_pin_obj_t mck;
      mp_hal_pin_obj_t sck;
-     mp_hal_pin_obj_t ws;
-@@ -110,7 +118,7 @@ static const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
+@@ -108,7 +116,7 @@ static const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYT
  };
  
  void machine_i2s_init0() {
@@ -1347,7 +1355,7 @@ index 80903e488..2c02c0b8e 100644
          MP_STATE_PORT(machine_i2s_obj)[p] = NULL;
      }
  }
-@@ -488,7 +496,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -475,7 +483,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
  }
  
  static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
@@ -1429,7 +1437,7 @@ index 5cb2f0a0a..3694be731 100644
          .gpio_cd = SDSPI_SLOT_NO_CD,
          .gpio_wp = SDSPI_SLOT_NO_WP,
 diff --git a/ports/esp32/machine_timer.c b/ports/esp32/machine_timer.c
-index a6ff4b961..289329e3a 100644
+index af8d2c13d..20d3c0518 100644
 --- a/ports/esp32/machine_timer.c
 +++ b/ports/esp32/machine_timer.c
 @@ -42,6 +42,14 @@
@@ -1465,10 +1473,22 @@ index 61a3bcf83..6a442d110 100644
  #error "Unknown touch hardware version"
  #endif
 diff --git a/ports/esp32/main.c b/ports/esp32/main.c
-index 050832ba4..68bcf2b9a 100644
+index 21eb8b259..eadb690f7 100644
 --- a/ports/esp32/main.c
 +++ b/ports/esp32/main.c
-@@ -63,7 +63,9 @@
+@@ -39,7 +39,11 @@
+ #include "esp_task.h"
+ #include "esp_event.h"
+ #include "esp_flash.h"
++#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
++#include "esp_flash_chips/spi_flash_chip_driver.h"
++#else
+ #include "spi_flash_chip_driver.h"
++#endif
+ #include "esp_log.h"
+ #include "esp_memory_utils.h"
+ #include "esp_psram.h"
+@@ -64,7 +68,9 @@
  #include "usb_serial_jtag.h"
  #include "modesp32.h"
  #include "modmachine.h"
@@ -1478,37 +1498,11 @@ index 050832ba4..68bcf2b9a 100644
  #if MICROPY_PY_NETWORK_WLAN_CSI
  #include "network_wlan_csi.h"
  #endif
-@@ -279,9 +281,11 @@ void boardctrl_startup(void) {
-         nvs_flash_init();
-     }
- 
--    // Query the physical size of the SPI flash and store it in the size
--    // variable of the global, default SPI flash handle.
--    esp_flash_get_physical_size(NULL, &esp_flash_default_chip->size);
-+    // Query the physical size of the SPI flash. esp_flash_t became opaque in
-+    // IDF v6, so keep the size in a local rather than writing it into the
-+    // (opaque) default chip handle.
-+    uint32_t flash_size = 0;
-+    esp_flash_get_physical_size(NULL, &flash_size);
- 
-     // If there is no filesystem partition (no "vfs" or "ffat"), add a "vfs" partition
-     // that extends from the end of the application partition up to the end of flash.
-@@ -300,8 +304,8 @@ void boardctrl_startup(void) {
- 
-         // If we found the application partition and there is some space between the end of
-         // that and the end of flash, create a "vfs" partition taking up all of that space.
--        if (offset > 0 && esp_flash_default_chip->size > offset) {
--            size_t size = esp_flash_default_chip->size - offset;
-+        if (offset > 0 && flash_size > offset) {
-+            size_t size = flash_size - offset;
-             esp_partition_register_external(esp_flash_default_chip, offset, size, "vfs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, NULL);
-         }
-     }
 diff --git a/ports/esp32/main/idf_component.yml b/ports/esp32/main/idf_component.yml
-index 62a729371..baa8e92d0 100644
+index 2068f25b9..06f563769 100644
 --- a/ports/esp32/main/idf_component.yml
 +++ b/ports/esp32/main/idf_component.yml
-@@ -13,14 +13,17 @@ dependencies:
+@@ -24,14 +24,17 @@ dependencies:
      # CDC port, which is why this is the tag and not the registry's 0.21.0~2.
      git: https://github.com/micropython/tinyusb-espressif.git
      version: v0.21.0.1-micropython1
@@ -1516,19 +1510,19 @@ index 62a729371..baa8e92d0 100644
 +  # both IDF v5.x and v6.x (older 0.15.x / 2.7.x don't build against IDF v6,
 +  # the wifi_remote sources for v6.1 are only in 1.6.0+).
    espressif/esp_hosted:
-+    version: "2.12.8"
++    version: "2.13.1"
      rules:
        - if: "target == esp32p4"
--    version: "2.7.0"
+-    version: "2.13.1"
    espressif/esp_wifi_remote:
-+    version: "1.6.0"
++    version: "1.6.5"
      rules:
        - if: "target == esp32p4"
--    version: "0.15.2"
+-    version: "1.6.5"
    # cameraif: the MIPI-CSI sensor drivers. ESP-IDF ships the CSI *controller*
    # (esp_driver_cam) but no sensor drivers; the OV5647 on the P4 panel's CSI
    # port comes from here. P4 only -- no other supported target has a CSI
-@@ -44,5 +47,28 @@ dependencies:
+@@ -55,5 +58,28 @@ dependencies:
      version: "~1.0.0"
      rules:
        - if: "target == esp32"
@@ -1558,7 +1552,7 @@ index 62a729371..baa8e92d0 100644
    idf:
      version: ">=5.3.0"
 diff --git a/ports/esp32/modespnow.c b/ports/esp32/modespnow.c
-index 7d8794eb9..c24ded92f 100644
+index 7d8794eb9..2213b8a47 100644
 --- a/ports/esp32/modespnow.c
 +++ b/ports/esp32/modespnow.c
 @@ -130,6 +130,16 @@ typedef struct _esp_espnow_obj_t {
@@ -1588,7 +1582,26 @@ index 7d8794eb9..c24ded92f 100644
      #if MICROPY_PY_ESPNOW_RSSI
      self->peers_table = mp_obj_new_dict(0);
      // Prevent user code modifying the dict
-@@ -282,6 +295,20 @@ static mp_obj_t espnow_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t
+@@ -198,7 +211,9 @@ static void send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t st
+ 
+ static void recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *msg, int msg_len);
+ 
+-// Return the current wifi mode, or raise ValueError
++// Return the current wifi mode, or raise ValueError.
++// Only used by the IDF < 6 rate config below.
++#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 0, 0)
+ static wifi_mode_t get_wifi_mode(void) {
+     wifi_mode_t mode;
+     if (esp_wifi_get_mode(&mode) != ESP_OK || mode == WIFI_MODE_NULL) {
+@@ -207,6 +222,7 @@ static wifi_mode_t get_wifi_mode(void) {
+     }
+     return mode;
+ }
++#endif
+ 
+ // ESPNow.init(): Initialise the data buffers and ESP-NOW functions.
+ // Initialise the Espressif ESPNOW software stack, register callbacks and
+@@ -282,6 +298,20 @@ static mp_obj_t espnow_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t
          self->recv_timeout_ms = args[ARG_timeout_ms].u_int;
      }
      if (args[ARG_rate].u_int >= 0) {
@@ -1609,7 +1622,7 @@ index 7d8794eb9..c24ded92f 100644
          wifi_mode_t mode = get_wifi_mode();
          if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA) {
              check_esp_err(esp_wifi_config_espnow_rate(ESP_IF_WIFI_STA, args[ARG_rate].u_int));
-@@ -289,6 +316,7 @@ static mp_obj_t espnow_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t
+@@ -289,6 +319,7 @@ static mp_obj_t espnow_config(size_t n_args, const mp_obj_t *pos_args, mp_map_t
          if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
              check_esp_err(esp_wifi_config_espnow_rate(ESP_IF_WIFI_AP, args[ARG_rate].u_int));
          }
@@ -1617,7 +1630,7 @@ index 7d8794eb9..c24ded92f 100644
      }
      if (args[ARG_get].u_obj == MP_OBJ_NULL) {
          return mp_const_none;
-@@ -696,6 +724,19 @@ static mp_obj_t espnow_add_peer(size_t n_args, const mp_obj_t *args, mp_map_t *k
+@@ -696,6 +727,19 @@ static mp_obj_t espnow_add_peer(size_t n_args, const mp_obj_t *args, mp_map_t *k
      _update_peer_info(&peer, n_args - 2, args + 2, kw_args);
  
      check_esp_err(esp_now_add_peer(&peer));
@@ -1638,7 +1651,7 @@ index 7d8794eb9..c24ded92f 100644
  
      return mp_const_none;
 diff --git a/ports/esp32/modmachine.c b/ports/esp32/modmachine.c
-index 4da59a11f..e93431aed 100644
+index acd622b8f..194ddf847 100644
 --- a/ports/esp32/modmachine.c
 +++ b/ports/esp32/modmachine.c
 @@ -34,12 +34,20 @@
@@ -1662,7 +1675,7 @@ index 4da59a11f..e93431aed 100644
  #if SOC_TOUCH_SENSOR_SUPPORTED
  #define MICROPY_PY_MACHINE_TOUCH_PAD_ENTRY { MP_ROM_QSTR(MP_QSTR_TouchPad), MP_ROM_PTR(&machine_touchpad_type) },
  #else
-@@ -200,7 +208,7 @@ static void machine_sleep_helper(wake_type_t wake_type, size_t n_args, const mp_
+@@ -199,7 +207,7 @@ static void machine_sleep_helper(wake_type_t wake_type, size_t n_args, const mp_
  
          if (MACHINE_WAKE_DEEPSLEEP == wake_type) {
              #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
@@ -1742,7 +1755,7 @@ index 77eb95ba3..1da2b0040 100644
  #endif
  
 diff --git a/ports/esp32/network_lan.c b/ports/esp32/network_lan.c
-index 336802cb9..c4fa1e19e 100644
+index e4ac74c5c..769ae7d8a 100644
 --- a/ports/esp32/network_lan.c
 +++ b/ports/esp32/network_lan.c
 @@ -34,6 +34,7 @@
@@ -1781,10 +1794,10 @@ index 336802cb9..c4fa1e19e 100644
  typedef struct _lan_if_obj_t {
      base_if_obj_t base;
      bool initialized;
-@@ -291,23 +313,33 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+@@ -303,23 +325,33 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
  
      switch (args[ARG_phy_type].u_int) {
-         #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32P4
+         #if CONFIG_ETH_USE_ESP32_EMAC
 +        #if PHY_LAN87XX_ENABLED
          case PHY_LAN8710:
          case PHY_LAN8720:
@@ -1815,7 +1828,7 @@ index 336802cb9..c4fa1e19e 100644
          #if PHY_LAN867X_ENABLED
          case PHY_LAN8670:
              self->phy = esp_eth_phy_new_lan867x(&phy_config);
-@@ -365,8 +397,13 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+@@ -383,8 +415,13 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
          if (self->mdc_pin == -1 || self->mdio_pin == -1) {
              mp_raise_ValueError(MP_ERROR_TEXT("mdc and mdio must be specified"));
          }
@@ -1829,7 +1842,7 @@ index 336802cb9..c4fa1e19e 100644
  
          #if CONFIG_IDF_TARGET_ESP32P4
          if (self->crs_dv_pin != -1) {
-@@ -392,12 +429,12 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
+@@ -410,12 +447,12 @@ static mp_obj_t get_lan(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_ar
                  mp_raise_ValueError(MP_ERROR_TEXT("clk_in must be specified if clk_out is specified"));
              }
              esp32_config.clock_config.rmii.clock_mode = EMAC_CLK_OUT;
@@ -1846,7 +1859,7 @@ index 336802cb9..c4fa1e19e 100644
          #endif
  
 diff --git a/ports/esp32/network_wlan.c b/ports/esp32/network_wlan.c
-index ace331de2..62f110dc1 100644
+index 0ebdb48b4..8c0f91d5a 100644
 --- a/ports/esp32/network_wlan.c
 +++ b/ports/esp32/network_wlan.c
 @@ -811,8 +811,14 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
@@ -1862,21 +1875,17 @@ index ace331de2..62f110dc1 100644
      { MP_ROM_QSTR(MP_QSTR_SEC_WPA3_EXT_PSK_MIXED_MODE), MP_ROM_INT(WIFI_AUTH_WPA3_EXT_PSK_MIXED_MODE) },
 +    #endif
      { MP_ROM_QSTR(MP_QSTR_SEC_DPP), MP_ROM_INT(WIFI_AUTH_DPP) },
-     #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
+     #if CONFIG_ESP_HOSTED_ENABLED || ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
      { MP_ROM_QSTR(MP_QSTR_SEC_WPA3_ENT), MP_ROM_INT(WIFI_AUTH_WPA3_ENTERPRISE) },
-@@ -839,7 +845,11 @@ static const mp_rom_map_elem_t wlan_if_locals_dict_table[] = {
- };
- static MP_DEFINE_CONST_DICT(wlan_if_locals_dict, wlan_if_locals_dict_table);
- 
--#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 3)
-+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+@@ -845,6 +851,8 @@ static MP_DEFINE_CONST_DICT(wlan_if_locals_dict, wlan_if_locals_dict_table);
+ #if CONFIG_ESP_HOSTED_ENABLED
+ _Static_assert(WIFI_AUTH_MAX == 18, "Synchronize WIFI_AUTH_XXX constants with the ESP-IDF. Look at managed_components/espressif__esp_wifi_remote/idf_v*/include/injected/esp_wifi_types_generic.h");
+ #else
 +// IDF v6 removed WIFI_AUTH_WPA3_EXT_PSK(_MIXED_MODE) (their slots became
 +// DUMMY placeholders, preserving values) and added WIFI_AUTH_WPA_ENTERPRISE.
-+_Static_assert(WIFI_AUTH_MAX == 18, "Synchronize WIFI_AUTH_XXX constants with the ESP-IDF. Look at esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h");
-+#elif ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 3)
- _Static_assert(WIFI_AUTH_MAX == 17, "Synchronize WIFI_AUTH_XXX constants with the ESP-IDF. Look at esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h");
- #elif ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
- _Static_assert(WIFI_AUTH_MAX == 16, "Synchronize WIFI_AUTH_XXX constants with the ESP-IDF. Look at esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h");
+ #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 6)
+ _Static_assert(WIFI_AUTH_MAX == 18, "Synchronize WIFI_AUTH_XXX constants with the ESP-IDF. Look at esp-idf/components/esp_wifi/include/esp_wifi_types_generic.h");
+ #elif ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 3)
 diff --git a/ports/esp32/network_wlan_csi.c b/ports/esp32/network_wlan_csi.c
 index 8e94495f6..a19c34fd1 100644
 --- a/ports/esp32/network_wlan_csi.c
@@ -1910,3 +1919,6 @@ index 6e00fa3aa..5ba7a6669 100644
  
  static void uart_irq_handler(void *arg);
  
+-- 
+2.43.0
+

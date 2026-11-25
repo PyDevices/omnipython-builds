@@ -1,11 +1,11 @@
 diff --git a/ports/esp32/main/idf_component.yml b/ports/esp32/main/idf_component.yml
-index 3c352a833..dbcdf47f4 100644
+index d0f794023..2068f25b9 100644
 --- a/ports/esp32/main/idf_component.yml
 +++ b/ports/esp32/main/idf_component.yml
-@@ -21,6 +21,25 @@ dependencies:
+@@ -32,6 +32,25 @@ dependencies:
      rules:
        - if: "target == esp32p4"
-     version: "0.15.2"
+     version: "1.6.5"
 +  # cameraif: the MIPI-CSI sensor drivers. ESP-IDF ships the CSI *controller*
 +  # (esp_driver_cam) but no sensor drivers; the OV5647 on the P4 panel's CSI
 +  # port comes from here. P4 only -- no other supported target has a CSI

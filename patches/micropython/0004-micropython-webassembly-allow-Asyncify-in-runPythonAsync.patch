@@ -4,29 +4,18 @@ Date: Sun, 23 Aug 2026 10:00:00 -0500
 Subject: [PATCH] webassembly: allow Asyncify in runPythonAsync
 
 Direct browser ports can suspend inside native imports such as Fetch. Mark the
-explicit asynchronous execution API as an Asyncify-aware ccall and await it;
-keep runPython synchronous for callers that do not suspend.
+explicit asynchronous execution API, which upstream already awaits, as an
+Asyncify-aware ccall; keep runPython synchronous for callers that do not
+suspend.
 ---
- ports/webassembly/api.js | 5 +++--
- 1 file changed, 3 insertions(+), 2 deletions(-)
+ ports/webassembly/api.js | 1 +
+ 1 file changed, 1 insertion(+)
 
 diff --git a/ports/webassembly/api.js b/ports/webassembly/api.js
-index 0718d13d6..8e15438d1 100644
+index 8c23be5fd..873717765 100644
 --- a/ports/webassembly/api.js
 +++ b/ports/webassembly/api.js
-@@ -147,16 +147,17 @@ export async function loadMicroPython(options) {
-             Module._free(buf);
-             return proxy_convert_mp_to_js_obj_jsside_with_free(value);
-         },
--        runPythonAsync(code) {
-+        async runPythonAsync(code) {
-             const len = Module.lengthBytesUTF8(code);
-             const buf = Module._malloc(len + 1);
-             Module.stringToUTF8(code, buf, len + 1);
-             const value = Module._malloc(3 * 4);
--            Module.ccall(
-+            await Module.ccall(
-                 "mp_js_do_exec_async",
+@@ -178,6 +178,7 @@ export async function loadMicroPython(options) {
                  "number",
                  ["pointer", "number", "pointer"],
                  [buf, len, value],
@@ -36,3 +25,4 @@ index 0718d13d6..8e15438d1 100644
              const ret = proxy_convert_mp_to_js_obj_jsside_with_free(value);
 -- 
 2.43.0
+
