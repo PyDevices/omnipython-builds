@@ -1,15 +1,17 @@
 # tflite: esp-vision's py_tflite.cpp (TensorFlow Lite Micro), compiled as it
 # is from the pinned esp-vision checkout in modules/.esp-vision, by way of
 # src/tflite_streaming.cpp, which includes it and adds what streaming
-# (stateful) models need: resource variables and their operators. ESP32-P4 and
-# ESP32-S3 only, the chips esp-vision builds it for: every other port and
-# chip skips it whole, so modules/all needs no exception. Make ports never
+# (stateful) models need: resource variables and their operators. ESP32-P4,
+# ESP32-S3 and ESP32-S31 only: the first two are the chips esp-vision builds it
+# for, and the S31 runs esp-nn's P4 kernels. Every other port and chip skips it
+# whole, so modules/all needs no exception. Make ports never
 # look here: there is no micropython.mk.
 #
 # build_mp.py adds components/tflite_micro to EXTRA_COMPONENT_DIRS; its
 # idf_component.yml has the component manager fetch espressif/esp-tflite-micro
 # at the version esp-vision uses.
-if(ESP_PLATFORM AND (IDF_TARGET STREQUAL "esp32p4" OR IDF_TARGET STREQUAL "esp32s3"))
+if(ESP_PLATFORM AND (IDF_TARGET STREQUAL "esp32p4" OR IDF_TARGET STREQUAL "esp32s3"
+                     OR IDF_TARGET STREQUAL "esp32s31"))
     execute_process(
         COMMAND sh ${CMAKE_CURRENT_LIST_DIR}/../.esp-vision/fetch.sh
         OUTPUT_VARIABLE ESP_VISION_SRC

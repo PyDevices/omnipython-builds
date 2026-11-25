@@ -2,8 +2,9 @@
 
 Two modules come from [espressif/esp-vision](https://github.com/espressif/esp-vision)
 (Apache-2.0; its imlib is OpenMV's, MIT), compiled from esp-vision's own
-files. Both are ESP32-P4 and ESP32-S3 only, both need ulab, and both are
-opt-in: `--modules all` leaves them out, so name them:
+files. Both run on the ESP32-P4 and ESP32-S3, and `tflite` on the ESP32-S31
+too. Both need ulab, and both are opt-in: `--modules all` leaves them out, so
+name them:
 
 ```bash
 ./build.py --port esp32 --board ESP32_GENERIC_P4 --variant C6_WIFI --flash 16MB --modules ulab,tflite,vision
@@ -66,7 +67,8 @@ microphone.
 ## Models that run
 
 These ran on an ESP32-P4 board, each with an example. The arena is what
-`Model.ram` reports, and the time is one `predict()`.
+`Model.ram` reports, and the time is one `predict()`. On an ESP32-S31 the
+microWakeWord model took 3.8 ms.
 
 | Model | Example | Arena | Time |
 |---|---|---|---|
