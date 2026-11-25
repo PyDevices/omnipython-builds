@@ -470,8 +470,8 @@ class Assemble(unittest.TestCase):
         fs = {b["id"]: (b.get("fs_offset"), b.get("fs_bytes")) for b in doc["builds"]}
         self.assertEqual(fs["mp-s3-lcd7"], ("0x570000", AUTOSIZED_FS))
         self.assertEqual(fs["mp-s3-lcd43"], ("0x570000", AUTOSIZED_FS))
-        self.assertEqual(fs["mp-p4-panel"], ("0x910000", 23488 * 1024))
-        self.assertEqual(fs["mp-p4-eye"], ("0x910000", 7104 * 1024))
+        self.assertEqual(fs["mp-p4-panel"], ("0x930000", 23360 * 1024))
+        self.assertEqual(fs["mp-p4-eye"], ("0x930000", 6976 * 1024))
         self.assertEqual(fs["cp-s3-lcd7"], (None, None))
 
     def rewrite(self, cell_id, role, data):
@@ -494,8 +494,8 @@ class Assemble(unittest.TestCase):
         # autosize's table for a bigger image: the app grown by 64 KB, the filesystem after it.
         self.rewrite("mp-p4-panel", "partitions", table_bin([
             ("nvs", 1, 2, 0x9000, 0x6000), ("phy_init", 1, 1, 0xF000, 0x1000),
-            ("factory", 0, 0, 0x10000, 0x910000), ("coredump", 1, 3, 0x920000, 0x10000)]))
-        self.fails_with("mp-p4-panel: the filesystem is 23360 KB at 0x930000, not the 23488K at 0x910000")
+            ("factory", 0, 0, 0x10000, 0x930000), ("coredump", 1, 3, 0x940000, 0x10000)]))
+        self.fails_with("mp-p4-panel: the filesystem is 23232 KB at 0x950000, not the 23360K at 0x930000")
 
     def test_a_named_filesystem_in_the_wrong_place_is_caught(self):
         self.rewrite("mp-p4-devkit", "partitions", table_bin([
@@ -507,8 +507,8 @@ class Assemble(unittest.TestCase):
         d = self.indir / "mp-p4-panel"
         meta = json.loads((d / "cell.json").read_text())
         flash = (d / meta["files"]["flash"]["file"]).read_bytes()
-        self.rewrite("mp-p4-panel", "flash", flash + b"\xff" * (0x910000 - len(flash) + 1))
-        self.fails_with("mp-p4-panel: flash.bin writes past 0x910000, into the filesystem")
+        self.rewrite("mp-p4-panel", "flash", flash + b"\xff" * (0x930000 - len(flash) + 1))
+        self.fails_with("mp-p4-panel: flash.bin writes past 0x930000, into the filesystem")
 
     def pico2_set(self):
         for c in rf.wanted(True):
@@ -678,7 +678,7 @@ class DraftRelease(unittest.TestCase):
         text = rf.notes(self.doc)
         self.assertIn("| ESP32-S3-Touch-LCD-7 | MicroPython v1.30.0-preview | ", text)
         self.assertIn(" | 2,624 KB at 0x570000 |", text)
-        self.assertIn(" | 23,488 KB at 0x910000 |", text)
+        self.assertIn(" | 23,360 KB at 0x930000 |", text)
         self.assertNotIn("This release moves the filesystem", text)
 
     def test_a_release_that_moves_a_filesystem_says_which_board(self):
@@ -721,7 +721,7 @@ class DraftRelease(unittest.TestCase):
         p.write_text(json.dumps(previous))
         out = self.root / "notes.md"
         self.assertEqual(rf.main(["notes", str(j), "--previous", str(p), "--out", str(out)]), 0)
-        self.assertIn("- ESP32-P4-WIFI6-Touch-LCD-4B (P4 before revision 3), MicroPython: 23,488 KB at 0x910000, was 0 KB at 0x910000",
+        self.assertIn("- ESP32-P4-WIFI6-Touch-LCD-4B (P4 before revision 3), MicroPython: 23,360 KB at 0x930000, was 0 KB at 0x930000",
                       out.read_text())
 
     def test_a_final_set_has_no_staged_banner(self):
