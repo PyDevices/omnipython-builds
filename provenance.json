@@ -259,6 +259,9 @@
   },
   "0087-micropython-py-the-ll-checks-pragma-needs-the-checks-plugin.patch": {
    "sha256": "6b513ea552f44a9cf8ddfcae638734b01b858db7060bebbd1566760374c86255"
+  },
+  "0088-micropython-unix-a-dupterm-stream-may-detach-itself-while-the-repl-waits.patch": {
+   "sha256": "fbec41595cf816a3737e56163236265f847fc1700cb8a1694d50fdb44b19916e"
   }
  },
  "tinyusb_patches": {

@@ -24,6 +24,7 @@ on:
       - 'patches/esp_hosted/**'
       - 'patches/micropython-lib/**'
       - 'tests/test_usb_device_port.py'
+      - 'tests/test_unix_dupterm.py'
       - 'tests/test_provenance.py'
       - 'scripts/update_provenance.py'
       - 'provenance.json'
@@ -47,6 +48,7 @@ on:
       - 'patches/esp_hosted/**'
       - 'patches/micropython-lib/**'
       - 'tests/test_usb_device_port.py'
+      - 'tests/test_unix_dupterm.py'
       - 'tests/test_provenance.py'
       - 'scripts/update_provenance.py'
       - 'provenance.json'
@@ -122,3 +124,22 @@ jobs:
         env:
           OMNIPYTHON_REQUIRE_MICROPYTHON: '1'
         run: PYTHONPATH=tests python3 -m unittest test_build_mp.VpathSearchesEachModuleFirst -v
+
+  unix-dupterm:
+    # The unix REPL with a dupterm stream that detaches itself while it waits,
+    # and exceptions after a dupterm read with nothing (patches/micropython/
+    # 0088), on the omnipython variant, the unix build that has os.dupterm.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the unix port's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libffi-dev pkg-config
+      - name: Build the unix port's omnipython variant with no modules
+        run: python3 build_mp.py --port unix --variant omnipython --modules ""
+      - name: The REPL outlives a stream that detaches itself
+        env:
+          OMNIPYTHON_REQUIRE_MICROPYTHON: '1'
+        run: PYTHONPATH=tests python3 -m unittest test_unix_dupterm -v

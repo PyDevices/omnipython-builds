@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 06:53:27 -0600
+Subject: [PATCH] unix/unix_mphal: a dupterm stream may detach itself while the
+ REPL waits.
+
+mp_hal_stdin_rx_chr() checked dupterm slot 0 once and then called
+call_dupterm_read(0) for as long as the stream's read() returned None.
+read() runs Python, and that code, or a timer or scheduled callback that
+runs during it, can take the stream off with os.dupterm(None, 0). The
+next call then looked up read() on a NULL object and the process died
+with SIGSEGV. A desktop app that mirrors the REPL through dupterm and
+detaches it when it closes does exactly this.
+
+call_dupterm_read() now returns -1 for an empty slot, so the REPL goes
+back to reading stdin as soon as the stream is gone.
+
+It also returned -2 for a read() of None, and -1 for an empty read, from
+inside its nlr_push() without popping it. The handler it left on top of
+the stack pointed into a frame that had returned, so the next exception
+with no newer handler, such as one raised and caught in the function
+that called input(), jumped there instead of to its own handler. Both
+paths now pop it first.
+---
+ ports/unix/unix_mphal.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/ports/unix/unix_mphal.c b/ports/unix/unix_mphal.c
+index d04e0b96e..196b20b99 100644
+--- a/ports/unix/unix_mphal.c
++++ b/ports/unix/unix_mphal.c
+@@ -122,7 +122,14 @@ void mp_hal_stdio_mode_orig(void) {
+ #endif
+ 
+ #if MICROPY_PY_OS_DUPTERM
++// Read one character from the stream in dupterm slot idx. Returns the
++// character, -2 if the stream has none yet, or -1 if the slot is empty, the
++// stream has ended or it raised. The slot is checked on every call because
++// the stream's read() can run anything, including code that detaches it.
+ static int call_dupterm_read(size_t idx) {
++    if (MP_STATE_VM(dupterm_objs[idx]) == MP_OBJ_NULL) {
++        return -1;
++    }
+     nlr_buf_t nlr;
+     if (nlr_push(&nlr) == 0) {
+         mp_obj_t read_m[3];
+@@ -130,6 +137,7 @@ static int call_dupterm_read(size_t idx) {
+         read_m[2] = MP_OBJ_NEW_SMALL_INT(1);
+         mp_obj_t res = mp_call_method_n_kw(1, 0, read_m);
+         if (res == mp_const_none) {
++            nlr_pop();
+             return -2;
+         }
+         mp_buffer_info_t bufinfo;
+@@ -137,6 +145,7 @@ static int call_dupterm_read(size_t idx) {
+         if (bufinfo.len == 0) {
+             mp_printf(&mp_plat_print, "dupterm: EOF received, deactivating\n");
+             MP_STATE_VM(dupterm_objs[idx]) = MP_OBJ_NULL;
++            nlr_pop();
+             return -1;
+         }
+         nlr_pop();
+-- 
+2.43.0
+
