@@ -72,7 +72,8 @@ espressif__tinyusb https://github.com/micropython/tinyusb-espressif.git 5c5c6603
 espressif__esp_hosted https://github.com/espressif/esp-hosted-mcu.git 0e8d0e3f0c2723deaf15441200cb4d8c53fea230  # version 2.13.1
 # CircuitPython is the second interpreter, and the one toolchain pin that is a
 # source tree. Always our own checkout in deps/, never a link to a sibling. Its
-# core is MicroPython 1.29, like the micropython pin, and its espressif port
+# core is MicroPython 1.29, while the micropython pin above is the 1.30
+# preview, so our C modules build against both cores. Its espressif port
 # moved to ESP-IDF 6.1.
 circuitpython     https://github.com/adafruit/circuitpython.git       792011f19a7f95274d14c8114d9957d5fde2bc7f  # tag 11.0.0-alpha.3
 
