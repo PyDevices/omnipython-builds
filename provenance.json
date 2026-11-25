@@ -78,7 +78,7 @@
    "sha256": "b3f0a51a2d8d387154e87ad9e5d905a444e26d5a8b73abab71efb97e3a98dd7b"
   },
   "0028-micropython-esp32-i2s-pdm-rx.patch": {
-   "sha256": "b1adcde9865fdf358efc8afe76792e9978f52dad4643313c011f147f537e7cf1"
+   "sha256": "582eeaf4c2679edac6f9c5181cba1e763b2f390352bf4264a08fd14df05103d9"
   },
   "0029-micropython-py-mkrules-cmake-short-qstr-include-paths.patch": {
    "sha256": "13ed62750d774c5fad3810936b63be45cba0549615c5ced373cfc446dba65976"

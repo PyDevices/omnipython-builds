@@ -25,9 +25,9 @@ Based-on: micropython 0fd6c573e (tag v1.29.0)
 ---
  docs/library/machine.I2S.rst |  8 ++++
  extmod/machine_i2s.c         |  9 ++++
- ports/esp32/machine_i2s.c    | 88 ++++++++++++++++++++++++++++++++----
+ ports/esp32/machine_i2s.c    | 91 ++++++++++++++++++++++++++++++++----
  ports/esp32/mpconfigport.h   |  5 ++
- 4 files changed, 102 insertions(+), 8 deletions(-)
+ 4 files changed, 104 insertions(+), 9 deletions(-)
 
 diff --git a/docs/library/machine.I2S.rst b/docs/library/machine.I2S.rst
 index f2704e9a3..a9b59279e 100644
@@ -77,7 +77,7 @@ index 453f84e50..a4c8cb4e2 100644
      { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(MONO) },
  };
 diff --git a/ports/esp32/machine_i2s.c b/ports/esp32/machine_i2s.c
-index c6a670138..d93034013 100644
+index c6a670138..6a43bf23c 100644
 --- a/ports/esp32/machine_i2s.c
 +++ b/ports/esp32/machine_i2s.c
 @@ -29,6 +29,9 @@
@@ -163,7 +163,14 @@ index c6a670138..d93034013 100644
      // copy audio samples from DMA memory to the app buffer
      // audio samples are read from DMA memory in chunks
      // loop, reading and copying chunks until the app buffer is filled
-@@ -314,10 +341,20 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -309,15 +336,26 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+     // are Pins valid?
+     int8_t mck = args[ARG_mck].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_mck].u_obj);
+     int8_t sck = args[ARG_sck].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_sck].u_obj);
+-    int8_t ws = args[ARG_ws].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_ws].u_obj);
++    // ws is left out (MP_OBJ_NULL) for PDM_RX, which has no word select
++    int8_t ws = args[ARG_ws].u_obj == mp_const_none || args[ARG_ws].u_obj == MP_OBJ_NULL ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_ws].u_obj);
+     int8_t sd = args[ARG_sd].u_obj == mp_const_none ? I2S_GPIO_UNUSED : machine_pin_get_id(args[ARG_sd].u_obj);
  
      // is Mode valid?
      int8_t mode = args[ARG_mode].u_int;
@@ -178,13 +185,13 @@ index c6a670138..d93034013 100644
          (mode != (MICROPY_PY_MACHINE_I2S_CONSTANT_TX))) {
          mp_raise_ValueError(MP_ERROR_TEXT("invalid mode"));
      }
-+    if (!pdm && ws == -1) {
++    if (!pdm && args[ARG_ws].u_obj == MP_OBJ_NULL) {
 +        mp_raise_ValueError(MP_ERROR_TEXT("ws is required"));
 +    }
  
      // is Bits valid?
      i2s_data_bit_width_t bits = args[ARG_bits].u_int;
-@@ -333,6 +370,16 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -333,6 +371,16 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
          mp_raise_ValueError(MP_ERROR_TEXT("invalid format"));
      }
  
@@ -201,7 +208,7 @@ index c6a670138..d93034013 100644
      // is Rate valid?
      // Not checked:  ESP-IDF I2S API does not indicate a valid range for sample rate
  
-@@ -344,6 +391,9 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -344,6 +392,9 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
      self->ws = ws;
      self->sd = sd;
      self->mode = mode;
@@ -211,7 +218,7 @@ index c6a670138..d93034013 100644
      self->bits = bits;
      self->format = format;
      self->rate = args[ARG_rate].u_int;
-@@ -361,7 +411,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -361,7 +412,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
      }
  
      i2s_chan_config_t chan_config = I2S_CHANNEL_DEFAULT_CONFIG(self->i2s_id, I2S_ROLE_MASTER);
@@ -220,7 +227,7 @@ index c6a670138..d93034013 100644
      chan_config.dma_frame_num = DMA_BUF_LEN_IN_I2S_FRAMES;
      chan_config.auto_clear = true;
  
-@@ -371,7 +421,29 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
+@@ -371,7 +422,29 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
          check_esp_err(i2s_new_channel(&chan_config, NULL, &self->i2s_chan_handle));
      }
  
@@ -252,7 +259,7 @@ index c6a670138..d93034013 100644
  
      i2s_std_config_t std_cfg = {
 diff --git a/ports/esp32/mpconfigport.h b/ports/esp32/mpconfigport.h
-index 512a1d478..95a54c2d9 100644
+index 8cb751e8e..1c9166423 100644
 --- a/ports/esp32/mpconfigport.h
 +++ b/ports/esp32/mpconfigport.h
 @@ -162,6 +162,11 @@
