@@ -98,5 +98,37 @@ class Evaluate(unittest.TestCase):
             self.assertEqual(doc["files"]["top.py"]["source_sha256"], doc["files"]["top.py"]["frozen_sha256"])
 
 
+    def test_leaving_omnipython_members_out_freezes_a_marker_for_omip(self):
+        # modules/omnipython with leave_out: the rest of the package, bledev once
+        # (its require("omnipython") would freeze the whole package again), and
+        # _omip_left_out naming what was left out.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lib = root / "omnipython-lib" / "library"
+            for name, manifest, files in (
+                ("omnipython", 'package("kept", opt=options.opt)\nmodule("gone.py", opt=options.opt)\n',
+                 {"kept/__init__.py": "x = 1\n", "gone.py": "x = 2\n"}),
+                ("bledev", 'require("omnipython", library="omnipython-lib", opt=options.opt)\n'
+                 'package("bledev", opt=options.opt)\n', {"bledev/__init__.py": "x = 3\n"}),
+                ("endpointkit", 'package("endpointkit")\n', {"endpointkit/__init__.py": "x = 4\n"}),
+            ):
+                (lib / name).mkdir(parents=True)
+                (lib / name / "manifest.py").write_text('options.defaults(opt=None)\n' + manifest)
+                for path, text in files.items():
+                    (lib / name / path).parent.mkdir(parents=True, exist_ok=True)
+                    (lib / name / path).write_text(text)
+            manifest = root / "manifest.py"
+            manifest.write_text(
+                'include(%r, leave_out=("gone",))\n' % str(HERE / "modules" / "omnipython" / "manifest.py")
+            )
+            env = {"OMNIPYTHON_LIBRARY": str(lib), "OMNIPYTHON_PLATFORM": "board"}
+            doc = freeze_list.evaluate(str(MICROPYTHON), str(root), None, None, env, str(manifest))
+            self.assertEqual(
+                sorted(doc["files"]), ["_omip_left_out.py", "bledev/__init__.py", "endpointkit/__init__.py", "kept/__init__.py"]
+            )
+            marker = (root / "omnipython-lib" / "left-out" / "_omip_left_out.py").read_text()
+            self.assertEqual(marker, "MODULES = ('gone',)\n")
+
+
 if __name__ == "__main__":
     unittest.main()

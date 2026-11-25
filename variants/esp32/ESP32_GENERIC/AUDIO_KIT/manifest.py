@@ -3,16 +3,24 @@
 # SPDX-License-Identifier: MIT
 
 # The Audio Kit's frozen content: the port's and the modules you named
-# (modules/manifest.py), plus appkit and touchkit, which its apps import, from
-# the applibs package with what those two need (deskkit and requests).
-# Frozen, they run from flash and leave the kit's small filesystem for the
-# app itself. Only this variant freezes them; other builds install them with
-# mip.
+# (modules/manifest.py), plus the app libraries Bluetooth Receiver imports:
+# appkit, touchkit, controlkit, deskkit and spectrum, with what they need.
+#
+# This is the one board that freezes app libraries. Everywhere else they
+# install with omip, so they update without new firmware. On the kit's 4 MB
+# they take about half the room frozen that they do as files, and as files
+# Bluetooth Receiver and its libraries don't fit beside the firmware. The app
+# itself still installs with omip (`app-btreceiver`), and so does the board
+# config.
 #
 # appkit draws with icons, so the build needs ttfio and icons named too. The
 # icons font is frozen deflated here, 45 KB in place of 90, and inflated
-# into PSRAM at import: the image doesn't fit the kit's 4 MB otherwise.
-# appkit and touchkit are frozen at opt=3 like the library's other packages.
+# into PSRAM at import. The libraries are frozen at opt=3 like the library's
+# other packages.
+#
+# To make room, the omnipython package goes in without hmilink, medialink,
+# mp4mux and usb_hid, which Bluetooth Receiver doesn't use, and
+# mpconfigvariant.cmake leaves LVGL's largest fonts out.
 import os
 
 _named = {n.strip() for n in os.environ.get("OMNIPYTHON_MODULES", "").split(",")}
@@ -22,7 +30,18 @@ if _missing:
         "AUDIO_KIT freezes appkit, which draws with icons: add %s to --modules" % ",".join(_missing)
     )
 
-include("../../../../modules/manifest.py", module_options={"icons": {"deflate": True}})
+include(
+    "../../../../modules/manifest.py",
+    module_options={
+        "icons": {"deflate": True},
+        "omnipython": {"leave_out": ("hmilink", "medialink", "mp4mux", "usb_hid")},
+    },
+)
 include("../../../../modules/library.py")
 
-require("applibs", library="omnipython-lib", packages=("appkit", "touchkit"), opt=3)
+require(
+    "applibs",
+    library="omnipython-lib",
+    packages=("appkit", "touchkit", "controlkit", "deskkit", "spectrum"),
+    opt=3,
+)

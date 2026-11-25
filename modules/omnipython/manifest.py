@@ -15,8 +15,71 @@
 import os
 
 include("../library.py")
-require("omnipython", library="omnipython-lib", opt=3)
-require("bledev", library="omnipython-lib", opt=3)
+
+# A board with very little flash can leave some of the omnipython package's
+# members out, as the Audio Kit's variant does:
+#   include(".../modules/manifest.py", module_options={"omnipython": {"leave_out": ("hmilink",)}})
+# Each name is a package or module at the top of omnipython. The rest is
+# frozen with the files the package's own manifest names, and a frozen
+# _omip_left_out module names what was left out, for omip.
+options.defaults(leave_out=())
+if options.leave_out:
+    _tree = os.environ["OMNIPYTHON_LIBRARY"]
+    _gone = set(options.leave_out)
+    _known = {n.split(".")[0] for n in os.listdir(os.path.join(_tree, "omnipython"))}
+    if not _gone <= _known:
+        raise ValueError("omnipython has no member %s" % ", ".join(sorted(_gone - _known)))
+
+    class _Options:
+        opt = 3
+
+        def defaults(self, **kwargs):
+            pass
+
+    def _freeze(name, gone=()):
+        # Runs the library package's own manifest, skipping the members in
+        # gone. Its require("omnipython") is skipped too: the package is
+        # frozen here already, without those members, and requiring it would
+        # freeze all of it a second time.
+        base = os.path.join(_tree, name)
+
+        def _package(member, files=None, opt=None):
+            if member not in gone:
+                package(member, files=files, base_path=base, opt=3)
+
+        def _module(member, opt=None):
+            if member.split(".")[0] not in gone:
+                module(member, base_path=base, opt=3)
+
+        def _require(member, **kwargs):
+            if member != "omnipython":
+                require(member, **kwargs)
+
+        with open(os.path.join(base, "manifest.py")) as f:
+            exec(
+                f.read(),
+                {
+                    "package": _package,
+                    "module": _module,
+                    "require": _require,
+                    "metadata": lambda **kwargs: None,
+                    "options": _Options(),
+                },
+            )
+
+    _freeze("omnipython", _gone)
+    _freeze("bledev")
+    # omip skips a package the firmware has frozen in, and installs only the
+    # modules a partly frozen one lacks: _omip_left_out names the ones left
+    # out here on purpose, so omip doesn't fill the filesystem with them.
+    _marker = os.path.join(os.path.dirname(_tree), "left-out")
+    os.makedirs(_marker, exist_ok=True)
+    with open(os.path.join(_marker, "_omip_left_out.py"), "w") as f:
+        f.write("MODULES = %r\n" % (tuple(sorted(_gone)),))
+    module("_omip_left_out.py", base_path=_marker, opt=3)
+else:
+    require("omnipython", library="omnipython-lib", opt=3)
+    require("bledev", library="omnipython-lib", opt=3)
 # endpointkit, which audiodev's Bluetooth and USB providers and displaydev's
 # endpoints import: without it a board that doesn't build usbhost (whose
 # packages bring it) can't list a Bluetooth speaker under audio out.
