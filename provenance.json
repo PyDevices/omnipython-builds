@@ -256,6 +256,9 @@
   },
   "0086-micropython-esp32-nvs-closes-its-handle-when-collected.patch": {
    "sha256": "120062d4ea8b024dd48423bced664a39a8ed06bdfedd97d0e530b71ae4db71e3"
+  },
+  "0087-micropython-py-the-ll-checks-pragma-needs-the-checks-plugin.patch": {
+   "sha256": "6b513ea552f44a9cf8ddfcae638734b01b858db7060bebbd1566760374c86255"
   }
  },
  "tinyusb_patches": {
