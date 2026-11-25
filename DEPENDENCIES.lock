@@ -19,8 +19,8 @@ micropython       https://github.com/micropython/micropython          b9620707e3
 # is missing; in a workspace modules/<name> is a link to the sibling checkout
 # and wins. castif is not here: it lives in modules/castif, tracked in this
 # repository.
-audiodsp          https://github.com/PyDevices/audiodsp.git           6d504f32a01d8d78904888e907a0b26b554b132f
-pygraphics        https://github.com/PyDevices/pygraphics.git         64fb884ee4ed45fa4a3a3ed64c808dcd9db22194
+audiodsp          https://github.com/PyDevices/audiodsp.git           692d37ec87b5149c709c81741194894ee8f12a13
+pygraphics        https://github.com/PyDevices/pygraphics.git         3454215e535e31cc08b5af450e6f8532c480b199
 ulab              https://github.com/v923z/micropython-ulab.git       15e999747079205b2415e71a6aa2840b8f85f9dc
 
 # omnipython-lvgl is not a module directory: it is LVGL, its generated
@@ -29,7 +29,7 @@ ulab              https://github.com/v923z/micropython-ulab.git       15e9997470
 # sibling checkout is linked there instead) and compiles the port for its
 # interpreter. Move the commit here to move every LVGL build, MicroPython's and
 # CircuitPython's.
-omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    d941b739c1d7ee73ff8449b839f9109238a94ae5
+omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    b686c0cbff32f1f8d984b8a7c13774b7a1a4a3e0
 
 # omnipython-lib is not a module either: it is the repository of our
 # Python-only packages (omnipython, palettes, pdwidgets, audioinstruments,
@@ -39,7 +39,7 @@ omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    d941b739c1
 # repository. The packages the library builds from other
 # repositories (audiocomponents' two) are pinned by tag in its lib-lock.json,
 # not here.
-omnipython-lib    https://github.com/PyDevices/omnipython.git          288cbe8ac4917cbbe3fa8df001d5a8c8073eb662
+omnipython-lib    https://github.com/PyDevices/omnipython.git          10f68906ce083da82dbfe98ce661b482550f3f34
 
 # esp-vision (espressif/esp-vision, Apache-2.0): the source of the tflite
 # module and, later, its image stack. modules/.esp-vision/fetch.sh puts it at
