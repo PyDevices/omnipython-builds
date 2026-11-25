@@ -17,3 +17,18 @@
 # DEV-KIT image can't (123 KB free with Home open at 128 KB), so it is set
 # here and not for every ESP32-P4.
 CONFIG_CACHE_L2_CACHE_256KB=y
+
+# esp_hosted's task stacks in PSRAM.
+#
+# On a P4 before revision 3, the internal RAM above 0x4ff3afc0 holds the
+# startup stacks, and ESP-IDF adds it to the heap only once main_task runs.
+# Until then the heap is what IRAM, .data and .bss leave of the low 236 KB,
+# plus RTC RAM and TCM: about 105 KB with every module built in. esp_hosted
+# starts the C6 link from a constructor, before the scheduler, and takes
+# about 80 KB of that: 55 KB of buffer pools and five 5 KB task stacks. The
+# main, idle and timer tasks then can't be created, and the board resets
+# every 10 s. With the stacks in PSRAM, 25 KB of it stays free.
+#
+# The pools can't follow: MALLOC_CAP_DMA isn't granted to PSRAM by ESP-IDF
+# 5.5's heap, so ESP_HOSTED_MEMPOOL_PREFER_SPIRAM falls back to internal RAM.
+CONFIG_ESP_HOSTED_DFLT_TASK_FROM_SPIRAM=y
