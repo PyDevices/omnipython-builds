@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 00:00:00 -0500
+Subject: [PATCH] rp2/rp2_flash: Erase and program flash on an SRAM stack.
+
+On a build with PSRAM the GC heap runs on into PSRAM, and a thread's
+stack comes from the GC heap, so once SRAM is busy core 1's stack is in
+PSRAM.  PSRAM sits behind the same QMI as flash: from the XIP cache clean
+until flash is back in XIP mode it can't be used.  A file write from such a
+thread lost its stack partway through the erase or program, never released
+the multicore lockout, and left core 0 in multicore_lockout_handler with
+interrupts off: the whole board hung, with no output.
+
+Run the cache clean, the erase or program and the timing restore on a
+2 KB stack in SRAM, entered after interrupts are disabled and left before
+they are enabled again.  Only the core that holds the lockout is ever on
+it, so one stack serves both cores.  Builds without PSRAM call the same
+code on their own stack, as before.
+
+diff --git a/ports/rp2/rp2_flash.c b/ports/rp2/rp2_flash.c
+index d030b7886..79998612d 100644
+--- a/ports/rp2/rp2_flash.c
++++ b/ports/rp2/rp2_flash.c
+@@ -171,8 +171,19 @@ static uint32_t begin_critical_flash_section(void) {
+     if (use_multicore_lockout()) {
+         multicore_lockout_start_blocking();
+     }
+-    uint32_t state = save_and_disable_interrupts();
++    return save_and_disable_interrupts();
++}
+ 
++static void end_critical_flash_section(uint32_t state) {
++    restore_interrupts(state);
++    if (use_multicore_lockout()) {
++        multicore_lockout_end_blocking();
++    }
++}
++
++// Erase (data == NULL) or program a range of flash.  Runs with interrupts
++// disabled and the other core locked out.
++static void __no_inline_not_in_flash_func(rp2_flash_range_op_internal)(uint32_t offset, const uint8_t *data, size_t len) {
+     #if MICROPY_HW_ENABLE_PSRAM
+     // We're about to invalidate the XIP cache, clean it first to commit any dirty writes to PSRAM
+     // Use the upper 16k of the maintenance space (0x1bffc000 through 0x1bffffff) to workaround
+@@ -184,18 +195,81 @@ static uint32_t begin_critical_flash_section(void) {
+     }
+     #endif
+ 
+-    return state;
+-}
++    if (data == NULL) {
++        flash_range_erase(offset, len);
++    } else {
++        flash_range_program(offset, data, len);
++    }
+ 
+-static void end_critical_flash_section(uint32_t state) {
+     // The ROM function to program flash will have reset the flash timing to
+     // defaults. (PSRAM timing is restored automatically by the SDK's flash
+     // routines via the QMI CS1 setup callback registered by psram_reinitialize.)
+     rp2_flash_set_timing_internal(clock_get_hz(clk_sys));
+-    restore_interrupts(state);
+-    if (use_multicore_lockout()) {
+-        multicore_lockout_end_blocking();
+-    }
++}
++
++#if MICROPY_HW_ENABLE_PSRAM
++
++// A thread's stack comes from the GC heap, so on a PSRAM build it can be in
++// PSRAM.  PSRAM shares the QMI with flash: from the XIP cache clean until flash
++// is back in XIP mode, a stack in PSRAM can't be used, and a core erasing or
++// programming flash from one loses its stack partway through, with the other
++// core left locked out for good.  So the operation runs on this SRAM stack.
++// One stack serves both cores: only the core holding the lockout, with its
++// interrupts disabled, ever runs on it.
++#define RP2_FLASH_OP_STACK_WORDS (512)
++static uint32_t rp2_flash_op_stack[RP2_FLASH_OP_STACK_WORDS] __attribute__((aligned(16)));
++
++typedef struct _rp2_flash_range_op_t {
++    uint32_t offset;
++    const uint8_t *data;
++    size_t len;
++} rp2_flash_range_op_t;
++
++static void __no_inline_not_in_flash_func(rp2_flash_range_op_entry)(void *arg) {
++    const rp2_flash_range_op_t *op = arg;
++    rp2_flash_range_op_internal(op->offset, op->data, op->len);
++}
++
++// Call fn(arg) with sp set to stack_top, and put the caller's sp back after.
++// The caller's sp and return address are kept on the new stack, so nothing is
++// written to the old one.
++__attribute__((naked, noinline)) static void rp2_flash_call_on_stack(void *arg, void (*fn)(void *), uint32_t *stack_top) {
++    #if defined(__riscv)
++    __asm volatile (
++        "mv t0, sp\n"
++        "addi sp, a2, -16\n"
++        "sw ra, 12(sp)\n"
++        "sw t0, 8(sp)\n"
++        "jalr a1\n"
++        "lw ra, 12(sp)\n"
++        "lw t0, 8(sp)\n"
++        "mv sp, t0\n"
++        "ret\n"
++        );
++    #else
++    __asm volatile (
++        "mov r3, sp\n"
++        "mov sp, r2\n"
++        "push {r3, lr}\n"
++        "blx r1\n"
++        "pop {r3, lr}\n"
++        "mov sp, r3\n"
++        "bx lr\n"
++        );
++    #endif
++}
++
++#endif
++
++static void rp2_flash_range_op(uint32_t offset, const uint8_t *data, size_t len) {
++    uint32_t state = begin_critical_flash_section();
++    #if MICROPY_HW_ENABLE_PSRAM
++    rp2_flash_range_op_t op = { offset, data, len };
++    rp2_flash_call_on_stack(&op, rp2_flash_range_op_entry, &rp2_flash_op_stack[RP2_FLASH_OP_STACK_WORDS]);
++    #else
++    rp2_flash_range_op_internal(offset, data, len);
++    #endif
++    end_critical_flash_section(state);
+ }
+ 
+ static mp_obj_t rp2_flash_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args) {
+@@ -276,9 +350,7 @@ static mp_obj_t rp2_flash_writeblocks(size_t n_args, const mp_obj_t *args) {
+     mp_buffer_info_t bufinfo;
+     mp_get_buffer_raise(args[2], &bufinfo, MP_BUFFER_READ);
+     if (n_args == 3) {
+-        mp_uint_t atomic_state = begin_critical_flash_section();
+-        flash_range_erase(self->flash_base + offset, bufinfo.len);
+-        end_critical_flash_section(atomic_state);
++        rp2_flash_range_op(self->flash_base + offset, NULL, bufinfo.len);
+         mp_event_handle_nowait();
+         // TODO check return value
+     } else {
+@@ -295,9 +367,7 @@ static mp_obj_t rp2_flash_writeblocks(size_t n_args, const mp_obj_t *args) {
+ 
+     if (write_direct) {
+         // If copying from SRAM, write direct
+-        mp_uint_t atomic_state = begin_critical_flash_section();
+-        flash_range_program(self->flash_base + offset, bufinfo.buf, bufinfo.len);
+-        end_critical_flash_section(atomic_state);
++        rp2_flash_range_op(self->flash_base + offset, bufinfo.buf, bufinfo.len);
+         mp_event_handle_nowait();
+     }
+     #if MICROPY_HW_ENABLE_PSRAM
+@@ -308,9 +378,7 @@ static mp_obj_t rp2_flash_writeblocks(size_t n_args, const mp_obj_t *args) {
+ 
+         while (bytes_left) {
+             memcpy(copy_buffer, bufinfo.buf + bytes_offset, MIN(bytes_left, COPY_BUFFER_SIZE_BYTES));
+-            mp_uint_t atomic_state = begin_critical_flash_section();
+-            flash_range_program(self->flash_base + offset + bytes_offset, copy_buffer, MIN(bytes_left, COPY_BUFFER_SIZE_BYTES));
+-            end_critical_flash_section(atomic_state);
++            rp2_flash_range_op(self->flash_base + offset + bytes_offset, copy_buffer, MIN(bytes_left, COPY_BUFFER_SIZE_BYTES));
+             bytes_offset += COPY_BUFFER_SIZE_BYTES;
+             if (bytes_left <= COPY_BUFFER_SIZE_BYTES) {
+                 break;
+@@ -342,9 +410,7 @@ static mp_obj_t rp2_flash_ioctl(mp_obj_t self_in, mp_obj_t cmd_in, mp_obj_t arg_
+             return MP_OBJ_NEW_SMALL_INT(BLOCK_SIZE_BYTES);
+         case MP_BLOCKDEV_IOCTL_BLOCK_ERASE: {
+             uint32_t offset = mp_obj_get_int(arg_in) * BLOCK_SIZE_BYTES;
+-            mp_uint_t atomic_state = begin_critical_flash_section();
+-            flash_range_erase(self->flash_base + offset, BLOCK_SIZE_BYTES);
+-            end_critical_flash_section(atomic_state);
++            rp2_flash_range_op(self->flash_base + offset, NULL, BLOCK_SIZE_BYTES);
+             // TODO check return value
+             return MP_OBJ_NEW_SMALL_INT(0);
+         }
