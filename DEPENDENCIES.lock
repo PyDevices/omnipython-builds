@@ -13,7 +13,7 @@
 # MicroPython, the commit the patch series applies to. Moving it re-validates
 # every patch (patches/apply_patches.py), and provenance.json says what it is
 # called (scripts/update_provenance.py).
-micropython       https://github.com/micropython/micropython          b70ae1aca657bb93e2857dac4e2a2d21a3803200
+micropython       https://github.com/micropython/micropython          b9620707e3697def3d8829a365aa0c863a69974e
 
 # Modules. build_mp.py clones a module at its commit only when modules/<name>
 # is missing; in a workspace modules/<name> is a link to the sibling checkout
@@ -66,9 +66,10 @@ emsdk             https://github.com/emscripten-core/emsdk.git        1518bec61a
 espressif__tinyusb https://github.com/micropython/tinyusb-espressif.git 5c5c660317943820d49ce5c188f1bd60cd8aade6  # tag v0.21.0.1-micropython1
 # esp_hosted, Wi-Fi through the companion chip on the esp32 port's P4
 # builds, at the commit the component registry's version the port names was
-# made from. build_mp.py checks the two agree, applies patches/esp_hosted/
-# to this copy and builds it in place of the managed component.
-espressif__esp_hosted https://github.com/espressif/esp-hosted-mcu.git 627d5d90461264c64f90de4416a93bb14a278890  # version 2.7.0
+# made from (the v2.13.1 tag). build_mp.py checks the two agree, applies
+# patches/esp_hosted/ to this copy when that folder has any (2.13.1 needs
+# none) and builds it in place of the managed component.
+espressif__esp_hosted https://github.com/espressif/esp-hosted-mcu.git 0e8d0e3f0c2723deaf15441200cb4d8c53fea230  # version 2.13.1
 # CircuitPython is the second interpreter, and the one toolchain pin that is a
 # source tree. Always our own checkout in deps/, never a link to a sibling. Its
 # core is MicroPython 1.29, like the micropython pin, and its espressif port
@@ -78,8 +79,10 @@ circuitpython     https://github.com/adafruit/circuitpython.git       792011f19a
 # The ESP32-S31. Upstream supports it only in open pull requests, on ESP-IDF
 # 6.1, so an S31 build (--board ESP32_GENERIC_S31) is the one build that uses
 # these two lines, and no other build reads them. micropython-s31 is the head
-# of micropython/micropython#19726 (which carries #19725, ESP-IDF 6): the
-# commit patches/micropython-s31/ was cut from. The build doesn't fetch it:
+# of micropython/micropython#19726, the commit the S31 patches of
+# patches/micropython-s31/ were cut from; its first patch, ESP-IDF 6, is cut
+# from #19725 at e6a738866578, which upstream rebased onto the micropython
+# pin above. The build doesn't fetch it:
 # the S31's tree is the micropython pin above with every patch the others get,
 # then patches/micropython-s31/. When upstream merges the two pull requests,
 # both lines and that series go, and the S31 builds from the pin like the rest.

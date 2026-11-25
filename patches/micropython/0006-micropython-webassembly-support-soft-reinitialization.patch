@@ -15,22 +15,22 @@ Based-on: micropython 0fd6c573e (tag v1.29.0)
  3 files changed, 34 insertions(+), 4 deletions(-)
 
 diff --git a/ports/webassembly/Makefile b/ports/webassembly/Makefile
-index 827cd46aa..cf6ff7dc3 100644
+index da2359795..171a97891 100644
 --- a/ports/webassembly/Makefile
 +++ b/ports/webassembly/Makefile
-@@ -82,6 +82,7 @@ JSFLAGS += -s EXPORTED_FUNCTIONS="\
+@@ -84,6 +84,7 @@ JSFLAGS += -s EXPORTED_FUNCTIONS="\
  	_free,\
  	_malloc,\
  	_mp_js_init,\
 +	_mp_js_deinit,\
  	_mp_js_repl_init,\
  	_mp_js_repl_process_char,\
- 	_mp_hal_get_interrupt_char,\
+ 	_mp_js_repl_process_char_async,\
 diff --git a/ports/webassembly/api.js b/ports/webassembly/api.js
-index 8e15438d1..a6277d5e7 100644
+index 873717765..f9e557be5 100644
 --- a/ports/webassembly/api.js
 +++ b/ports/webassembly/api.js
-@@ -132,6 +132,18 @@ export async function loadMicroPython(options) {
+@@ -149,6 +149,18 @@ export async function loadMicroPython(options) {
              );
              Module._free(value);
          },
@@ -50,7 +50,7 @@ index 8e15438d1..a6277d5e7 100644
          runPython(code) {
              const len = Module.lengthBytesUTF8(code);
 diff --git a/ports/webassembly/main.c b/ports/webassembly/main.c
-index 670d404da..544a2e4b5 100644
+index ad876eab5..ec5bfce68 100644
 --- a/ports/webassembly/main.c
 +++ b/ports/webassembly/main.c
 @@ -54,6 +54,9 @@ static size_t external_call_depth = 0;
@@ -63,7 +63,7 @@ index 670d404da..544a2e4b5 100644
  #if MICROPY_GC_SPLIT_HEAP_AUTO
  static void gc_collect_top_level(mp_obj_t root_obj);
  #endif
-@@ -77,13 +80,13 @@ void mp_js_init(int pystack_size, int heap_size) {
+@@ -131,13 +134,13 @@ void mp_js_init(int pystack_size, int heap_size) {
      mp_cstack_init_with_sp_here(CSTACK_SIZE);
  
      #if MICROPY_ENABLE_PYSTACK
@@ -81,7 +81,7 @@ index 670d404da..544a2e4b5 100644
      #endif
  
      #if MICROPY_GC_SPLIT_HEAP_AUTO
-@@ -110,6 +113,20 @@ void mp_js_init(int pystack_size, int heap_size) {
+@@ -164,6 +167,20 @@ void mp_js_init(int pystack_size, int heap_size) {
      #endif
  }
  

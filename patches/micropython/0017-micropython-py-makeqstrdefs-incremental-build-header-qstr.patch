@@ -19,12 +19,12 @@ Unchanged on upstream master as of 2026-10-05.
  1 file changed, 6 insertions(+), 2 deletions(-)
 
 diff --git a/py/makeqstrdefs.py b/py/makeqstrdefs.py
-index e1046fa2b..628fbe631 100644
+index db0e74c45..055755810 100644
 --- a/py/makeqstrdefs.py
 +++ b/py/makeqstrdefs.py
-@@ -138,8 +138,12 @@ def process_file(f):
-             if not is_c_source(fname) and not is_cxx_source(fname):
-                 continue
+@@ -147,8 +147,12 @@ def process_file(f):
+         if m:
+             fname = m.group(1)
              if fname != last_fname:
 -                write_out(last_fname, output)
 -                output = []

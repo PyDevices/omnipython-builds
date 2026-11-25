@@ -1632,9 +1632,14 @@ class MicropythonLibPatches(unittest.TestCase):
         patches = apply_patches.lib_series()
         self.assertTrue(patches)
         files = apply_patches.lib_files(patches)
-        self.assertIn("micropython/usb/usb-device-midi/usb/device/midi.py", files)
-        pin = "ee4bb8ff139e24c42b739935fbd8ec7c4d061e02"  # the submodule at b70ae1aca
+        self.assertIn("micropython/net/webrepl/webrepl.py", files)
         mp = Path(build_mp.__file__).resolve().parent / "micropython"
+        # The submodule's commit at the locked MicroPython pin, so the test follows a pin move.
+        tree = subprocess.run(["git", "-C", str(mp), "ls-tree", build_mp.pin(build_mp.pins.MICROPYTHON).ref,
+                               "lib/micropython-lib"], capture_output=True, text=True).stdout.split()
+        if len(tree) < 3:
+            self.skipTest("no MicroPython checkout at the pin")
+        pin = tree[2]
         with tempfile.TemporaryDirectory() as tmp:
             lib = Path(tmp)
 
@@ -1654,13 +1659,13 @@ class MicropythonLibPatches(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 apply_patches.apply_lib(lib, patches)
             self.assertEqual(out.getvalue().count("applied "), len(patches))
-            midi = (lib / "micropython/usb/usb-device-midi/usb/device/midi.py").read_text()
-            self.assertIn("_on_rx_schedule", midi)
+            webrepl = (lib / "micropython/net/webrepl/webrepl.py").read_text()
+            self.assertIn("def _keepalive(cl):", webrepl)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 apply_patches.apply_lib(lib, patches)
             self.assertEqual(out.getvalue().count("already in micropython-lib"), len(patches))
-            self.assertEqual((lib / "micropython/usb/usb-device-midi/usb/device/midi.py").read_text(), midi)
+            self.assertEqual((lib / "micropython/net/webrepl/webrepl.py").read_text(), webrepl)
 
 
 class Coredump(unittest.TestCase):
