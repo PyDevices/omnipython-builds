@@ -262,6 +262,9 @@
   },
   "0088-micropython-unix-a-dupterm-stream-may-detach-itself-while-the-repl-waits.patch": {
    "sha256": "fbec41595cf816a3737e56163236265f847fc1700cb8a1694d50fdb44b19916e"
+  },
+  "0089-micropython-rp2-a-thread-with-its-stack-in-psram-can-write-flash.patch": {
+   "sha256": "8cd9ddcc1e4d132bb4be8d2ca452e016bf99ce0c2034fee8adcf2f3f8f2d2f18"
   }
  },
  "tinyusb_patches": {
