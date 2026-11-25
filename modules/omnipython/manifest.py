@@ -20,7 +20,8 @@ include("../library.py")
 # members out, as the Audio Kit's variant does:
 #   include(".../modules/manifest.py", module_options={"omnipython": {"leave_out": ("hmilink",)}})
 # Each name is a package or module at the top of omnipython. The rest is
-# frozen with the files the package's own manifest names.
+# frozen with the files the package's own manifest names, and a frozen
+# _omip_left_out module names what was left out, for omip.
 options.defaults(leave_out=())
 if options.leave_out:
     _tree = os.environ["OMNIPYTHON_LIBRARY"]
@@ -68,6 +69,14 @@ if options.leave_out:
 
     _freeze("omnipython", _gone)
     _freeze("bledev")
+    # omip skips a package the firmware has frozen in, and installs only the
+    # modules a partly frozen one lacks: _omip_left_out names the ones left
+    # out here on purpose, so omip doesn't fill the filesystem with them.
+    _marker = os.path.join(os.path.dirname(_tree), "left-out")
+    os.makedirs(_marker, exist_ok=True)
+    with open(os.path.join(_marker, "_omip_left_out.py"), "w") as f:
+        f.write("MODULES = %r\n" % (tuple(sorted(_gone)),))
+    module("_omip_left_out.py", base_path=_marker, opt=3)
 else:
     require("omnipython", library="omnipython-lib", opt=3)
     require("bledev", library="omnipython-lib", opt=3)
