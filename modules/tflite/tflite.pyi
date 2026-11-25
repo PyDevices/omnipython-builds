@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
 #
 # SPDX-License-Identifier: MIT AND Apache-2.0
-"""TensorFlow Lite Micro inference on the ESP32-P4 and ESP32-S3.
+"""TensorFlow Lite Micro inference on the ESP32-P4, ESP32-S3 and ESP32-S31.
 
 `Model` loads a `.tflite` file and runs it. Inputs and outputs are ulab
 ndarrays, so a firmware needs the `ulab` module too. This is esp-vision's
