@@ -21,13 +21,11 @@ probe in a linker section nothing names, and its CMakeLists.txt adds
 link isn't CMake's, so the same options are read from the sdkconfig. And like
 esp-camera, the cameraif module holds an SCCB device on the board I2C, so it
 is closed in reset_port_early(), before the board buses are deleted, when it
-is in the firmware.
-
-diff --git a/ports/espressif/CMakeLists.txt b/ports/espressif/CMakeLists.txt
-index e31099b..e100d00 100644
+is in the firmware.diff --git a/ports/espressif/CMakeLists.txt b/ports/espressif/CMakeLists.txt
+index c644a96..c21f5f9 100644
 --- a/ports/espressif/CMakeLists.txt
 +++ b/ports/espressif/CMakeLists.txt
-@@ -28,6 +28,20 @@ if(CIRCUITPY_ESP_HOSTED)
+@@ -29,6 +29,20 @@ if(CIRCUITPY_ESP_HOSTED)
      list(APPEND COMPONENTS esp-hosted)
  endif()
  
@@ -49,10 +47,10 @@ index e31099b..e100d00 100644
  set(ENV{ESP_IDF_VERSION} "${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}")
  project(circuitpython)
 diff --git a/ports/espressif/Makefile b/ports/espressif/Makefile
-index c5fb86d..dab8dce 100644
+index 7dbc94d..6f21c1f 100644
 --- a/ports/espressif/Makefile
 +++ b/ports/espressif/Makefile
-@@ -972,13 +972,19 @@ endif
+@@ -993,13 +993,19 @@ endif
  
  SDKCONFIGS := esp-idf-config/sdkconfig.defaults;$(DEBUG_SDKCONFIG);$(FLASH_SIZE_SDKCONFIG);$(FLASH_MODE_SDKCONFIG);$(FLASH_SPEED_SDKCONFIG);$(PSRAM_SDKCONFIG);$(PSRAM_SIZE_SDKCONFIG);$(PSRAM_MODE_SDKCONFIG);$(PSRAM_SPEED_SDKCONFIG);$(BLE_SDKCONFIG)$(NATIVE_SDKCONFIG)$(HARDWAREKEY_SDKCONFIG);$(TARGET_SDKCONFIG);boards/$(BOARD)/sdkconfig
  
@@ -73,7 +71,7 @@ index c5fb86d..dab8dce 100644
  	$(Q)$(PYTHON) tools/check-sdkconfig.py \
  		CIRCUITPY_DUALBANK=$(CIRCUITPY_DUALBANK) \
  		CIRCUITPY_STORAGE_EXTEND=$(CIRCUITPY_STORAGE_EXTEND) \
-@@ -1165,6 +1171,24 @@ ifneq ($(CIRCUITPY_SDIOIO),0)
+@@ -1190,6 +1196,24 @@ ifneq ($(CIRCUITPY_SDIOIO),0)
  	ESP_IDF_COMPONENTS_LINK += sdmmc esp_driver_sdmmc esp_driver_sd_intf esp_hal_sd
  endif
  
@@ -99,10 +97,10 @@ index c5fb86d..dab8dce 100644
  
  MBEDTLS_COMPONENTS_LINK = crypto tls x509
 diff --git a/ports/espressif/supervisor/port.c b/ports/espressif/supervisor/port.c
-index e453863..706ad63 100644
+index b4743ba..da99d1d 100644
 --- a/ports/espressif/supervisor/port.c
 +++ b/ports/espressif/supervisor/port.c
-@@ -453,6 +453,9 @@ void *esp_native_code_commit(void *buf, size_t len, void *reloc) {
+@@ -497,6 +497,9 @@ void *esp_native_code_commit(void *buf, size_t len, void *reloc) {
  }
  #endif
  
@@ -110,17 +108,16 @@ index e453863..706ad63 100644
 +extern void cameraif_reset(void) __attribute__((weak));
 +
  void reset_port_early(void) {
-     // esp-camera adds an I2C device on the ESP I2C bus, and keeps it there. This
-     // is unlike busio.I2C, which adds and removes the device on each operation.
-@@ -460,6 +463,14 @@ void reset_port_early(void) {
-     // esp_camera_deinit() from here. Instead, let GC finalization (via __del__)
-     // deinit the camera before reset_board_buses() deletes the I2C bus.
-     // Unfortunately, there is no I2C driver API to enumerate or delete all the devices.
+     // Deinit the camera now, before reset_board_buses() deinits board.I2C().
+     //
+@@ -511,6 +514,13 @@ void reset_port_early(void) {
+     #if CIRCUITPY_ESPCAMERA
+     espcamera_reset();
+     #endif
 +
 +    // The cameraif user C module (MIPI-CSI cameras) holds its SCCB device on
 +    // the board I2C the same way, along with the CSI controller, the ISP and
-+    // the PHY's LDO. When it is in the firmware, it closes the camera here
-+    // without waiting for the garbage collector.
++    // the PHY's LDO. When it is in the firmware, it closes the camera here too.
 +    if (cameraif_reset != NULL) {
 +        cameraif_reset();
 +    }

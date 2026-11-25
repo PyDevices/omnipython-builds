@@ -5,13 +5,11 @@ to low power between lines. DSI-to-RGB bridges such as the Chipone ICN6211
 on Raspberry Pi-style panels need non-burst video with sync pulses and a
 continuous high-speed clock, or the panel stays white. Two keyword
 arguments set both, through the HAL context in ESP-IDF's DSI bus. The
-M5Stack Tab5 board passes False for both.
-
-diff --git a/ports/espressif/boards/m5stack_tab5/board.c b/ports/espressif/boards/m5stack_tab5/board.c
-index 3acdd43..d6921a0 100644
+M5Stack Tab5 board passes False for both.diff --git a/ports/espressif/boards/m5stack_tab5/board.c b/ports/espressif/boards/m5stack_tab5/board.c
+index d318fe3..9095006 100644
 --- a/ports/espressif/boards/m5stack_tab5/board.c
 +++ b/ports/espressif/boards/m5stack_tab5/board.c
-@@ -362,7 +362,9 @@ void board_init(void) {
+@@ -363,7 +363,9 @@ void board_init(void) {
          vsync_back_porch,
          vsync_front_porch,
          pixel_clock_frequency,
@@ -23,12 +21,12 @@ index 3acdd43..d6921a0 100644
  
      // Create framebuffer display
 diff --git a/ports/espressif/common-hal/mipidsi/Display.c b/ports/espressif/common-hal/mipidsi/Display.c
-index 7e0e236..6049155 100644
+index f9b47f3..accd0cd 100644
 --- a/ports/espressif/common-hal/mipidsi/Display.c
 +++ b/ports/espressif/common-hal/mipidsi/Display.c
-@@ -15,6 +15,19 @@
- #include <esp_lcd_panel_ops.h>
+@@ -16,6 +16,19 @@
  #include <esp_heap_caps.h>
+ #include "hal/axi_icm_ll.h"
  #include "py/runtime.h"
 +#include "esp_lcd_mipi_dsi.h"
 +#include "hal/mipi_dsi_hal.h"
@@ -46,7 +44,7 @@ index 7e0e236..6049155 100644
  
  // Cache write-back function (should be from rom/cache.h but it's not always available)
  extern int Cache_WriteBack_Addr(uint32_t addr, uint32_t size);
-@@ -53,7 +66,9 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
+@@ -81,7 +94,9 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
      mp_uint_t vsync_back_porch,
      mp_uint_t vsync_front_porch,
      mp_uint_t pixel_clock_frequency,
@@ -57,7 +55,7 @@ index 7e0e236..6049155 100644
      self->bus = bus;
      self->virtual_channel = virtual_channel;
      self->width = width;
-@@ -158,6 +173,12 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
+@@ -194,6 +209,12 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
          i += 2 + data_size;
      }
  
@@ -70,7 +68,7 @@ index 7e0e236..6049155 100644
      // Initialize the panel after sending init commands
      ret = esp_lcd_panel_init(self->dpi_panel_handle);
      if (ret != ESP_OK) {
-@@ -165,6 +186,11 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
+@@ -212,6 +233,11 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
          CHECK_ESP_RESULT(ret);
      }
  
@@ -83,7 +81,7 @@ index 7e0e236..6049155 100644
      // the reference BSP flow order.
      esp_lcd_panel_io_tx_param(self->dbi_io_handle, 0x29, NULL, 0);
 diff --git a/shared-bindings/mipidsi/Display.c b/shared-bindings/mipidsi/Display.c
-index b4c3d23..a54185c 100644
+index dd10239..a31c84c 100644
 --- a/shared-bindings/mipidsi/Display.c
 +++ b/shared-bindings/mipidsi/Display.c
 @@ -38,6 +38,8 @@
@@ -136,7 +134,7 @@ index b4c3d23..a54185c 100644
      return MP_OBJ_FROM_PTR(self);
  }
 diff --git a/shared-bindings/mipidsi/Display.h b/shared-bindings/mipidsi/Display.h
-index df998fc..687edbd 100644
+index 981bde4..fa55084 100644
 --- a/shared-bindings/mipidsi/Display.h
 +++ b/shared-bindings/mipidsi/Display.h
 @@ -32,7 +32,9 @@ void common_hal_mipidsi_display_construct(mipidsi_display_obj_t *self,
