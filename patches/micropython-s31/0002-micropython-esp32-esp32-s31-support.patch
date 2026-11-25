@@ -68,7 +68,7 @@ index 000000000..342fb5077
 +        "../deploy.md"
 +    ],
 +    "deploy_options": {
-+        "flash_offset": "0"
++        "flash_offset": "0x2000"
 +    },
 +    "docs": "",
 +    "features": [
