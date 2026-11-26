@@ -1,7 +1,8 @@
 # The all-apps browser build: the omnipython variant's runtime (its JS hooks,
 # Asyncify and growing memory) with every app frozen in. Only the manifest
 # differs, and the page's /models folder, which carries the model files the
-# apps load (the wake word's), so the page fetches nothing for them.
+# apps load (the wake word's), so the page fetches nothing for them, and
+# Object detection's note of where the page keeps its model.
 # scripts/build_wasm_allapps.py builds it, and names that folder in
 # $OMNIPYTHON_MODELS.
 include $(VARIANT_DIR)/../omnipython/mpconfigvariant.mk

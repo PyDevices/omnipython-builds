@@ -34,6 +34,11 @@ class Parse(unittest.TestCase):
         self.assertTrue(p.download)
         self.assertEqual(p.ref, "2.30.10")
 
+    def test_a_model_file_is_a_download_and_a_source(self):
+        p = pins.parse("yolox-nano https://x/releases/download/0.1.1rc0/yolox_nano.onnx 0.1.1rc0\n")["yolox-nano"]
+        self.assertTrue(p.download)
+        self.assertEqual((p.ref, p.group), ("0.1.1rc0", "sources"))
+
     def test_a_checkout_takes_a_full_commit(self):
         for ref in ("84d1de3", "v5.5.4", C[:-1] + "g", C + "0"):
             with self.assertRaisesRegex(pins.LockError, "full 40-character commit"):

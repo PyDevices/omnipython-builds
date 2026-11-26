@@ -46,6 +46,7 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 | `allapps.json` | The apps and omnipython commits it was built from, and the build's id. |
 | `manifest.webmanifest`, `icon.svg`, `icon-maskable.svg` | What makes the page an installable web app: its name, icons and window. |
 | `sw.js` | The service worker, which keeps the page and its runtime so it opens offline. The build writes its id into it. |
+| `detect.mjs`, `ort/`, `models/` | Object detection: the page side of its `espdl`, ONNX Runtime Web 1.31.1, and the YOLOX-nano model it runs, with YOLOX's licence. |
 
 The page takes `?width=` and `?height=` to size the screen, and `?app=clock`
 to start in an app, as a restart into one does.
@@ -112,6 +113,28 @@ inline assembler can't be compiled
 for this port, so it's left out, and the build says which: castdisplay goes
 in without `castfast.py`, which it only imports where it's there.
 
+## Object detection
+
+The Detect app runs in the page as it does on a board: `espdl` and `image`
+are frozen into the page as small Python modules over `detect.mjs`, which
+runs [YOLOX-nano](https://github.com/Megvii-BaseDetection/YOLOX) with
+[ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/) on WebGPU, or
+WebGL, or the CPU, whichever works first. It knows the same 80 COCO classes
+as a board's YOLO11n and returns the same `(x, y, w, h, score, class)`
+tuples, though the boxes it finds may differ from a board's.
+
+Both ship in the page, so nothing comes from elsewhere. ONNX Runtime Web is
+in `ort/`, taken from its npm package at the version `DEPENDENCIES.lock`
+pins. The model is in `models/`: the ONNX file of the YOLOX release
+`DEPENDENCIES.lock` pins, 3.7 MB, with YOLOX's licence (Apache-2.0) beside
+it. The build checks both files' hashes.
+
+The page's `/models/yolo11n_coco.espdl`, where the app looks for its model,
+is a short note of where the page's model is, its size, its SHA-256 and its
+licence. The model downloads only the first time the app opens, with a bar
+along the top saying so, and the browser keeps it, so later opens don't
+download it again.
+
 ## How it differs from the shared browser build
 
 The shared build (the omnipython variant) is what the website, the docs'
@@ -169,7 +192,9 @@ then kept.
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)
 workflow builds the page, checks that the runtime starts and imports Home,
-runs Wake word's model on a spoken "Hey Jarvis"
+that Object detection's page side works
+(`variants/webassembly/tests/detect.mjs`, with a stand-in for ONNX Runtime),
+and runs Wake word's model on a spoken "Hey Jarvis"
 (`variants/webassembly/tests/wakeword.mjs`), and uploads it as the `allapps-page` artifact. On `main` it then asks the
 [apps.omnipython.org](https://github.com/PyDevices/apps.omnipython.org)
 repository to publish that artifact: its workflow downloads the page from
@@ -179,8 +204,8 @@ committed anywhere. The workflow runs:
 - when the apps repository publishes a release, which sends an
   `apps-release` event naming its tag; that tag and omnipython's `main` are
   built;
-- on a pull request that changes the page's build, its variant or tflite,
-  with apps and omnipython `main`; it never publishes;
+- on a pull request that changes the page's build, its variant, its tests or
+  tflite, with apps and omnipython `main`; it never publishes;
 - by hand: open the workflow, choose **Run workflow**, and give the two refs.
   Untick **publish** to build without publishing; a run from any branch but
   `main` never publishes.

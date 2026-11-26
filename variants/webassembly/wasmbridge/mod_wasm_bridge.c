@@ -440,12 +440,19 @@ static mp_obj_t bridge_http_get(mp_obj_t url_obj) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(bridge_http_get_obj, bridge_http_get);
 
-static mp_obj_t bridge_sleep_ms(mp_obj_t ms) {
-    omnipython_sleep_ms(mp_obj_get_int(ms));
-    timer_deliver_queued();
+// sleep_ms(ms, deliver=True): give the page ms milliseconds, then deliver
+// the timer firings that came meanwhile. With deliver False they stay queued
+// for the next sleep or poll, so the wait runs no Python, as a board's
+// blocking call doesn't: the page's espdl waits on its model this way, and a
+// frame it hands back is drawn on before the screen refreshes.
+static mp_obj_t bridge_sleep_ms(size_t n_args, const mp_obj_t *args) {
+    omnipython_sleep_ms(mp_obj_get_int(args[0]));
+    if (n_args < 2 || mp_obj_is_true(args[1])) {
+        timer_deliver_queued();
+    }
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(bridge_sleep_ms_obj, bridge_sleep_ms);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bridge_sleep_ms_obj, 1, 2, bridge_sleep_ms);
 
 // The page's camera: open starts asking the browser, and state says when it's
 // open (1), still opening (0) or failed (below 0).

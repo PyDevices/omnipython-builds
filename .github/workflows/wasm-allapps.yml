@@ -2,13 +2,14 @@
 # into one WebAssembly runtime (scripts/build_wasm_allapps.py,
 # docs/guides/build-the-all-apps-page.md). Run it by hand with the refs to
 # build; it builds, checks the runtime starts and imports what Home needs and
-# runs Wake word's model, and uploads the page as the allapps-page artifact. From main it then asks
+# that Object detection's page side works, runs Wake word's model, and uploads
+# the page as the allapps-page artifact. From main it then asks
 # PyDevices/apps.omnipython.org to publish that artifact at
 # https://apps.omnipython.org/, unless you untick "publish". A release of the
 # apps repository sends an apps-release event, which builds that tag and
-# publishes it.
-# A pull request that changes the page's build, its variant or tflite runs it
-# too, on apps and omnipython main, and publishes nothing.
+# publishes it. A pull request that changes the page's build, its variant, its
+# tests or tflite runs it too, on apps and omnipython main, and publishes
+# nothing.
 name: All-apps browser page
 
 on:
@@ -16,6 +17,8 @@ on:
     paths:
       - 'scripts/build_wasm_allapps.py'
       - 'variants/webassembly/allapps/**'
+      - 'variants/webassembly/tests/detect.mjs'
+      - 'DEPENDENCIES.lock'
       - 'variants/webassembly/tests/wakeword.mjs'
       - 'variants/webassembly/tests/hey_jarvis.wav'
       - 'modules/tflite/**'
@@ -80,6 +83,8 @@ jobs:
           node builds/allapps-page/micropython.mjs /tmp/check.py
           cat builds/allapps-page/allapps.json
 
+      - name: Object detection's page side works
+        run: node variants/webassembly/tests/detect.mjs builds/allapps-page
       - name: It runs Wake word's model
         run: node variants/webassembly/tests/wakeword.mjs builds/allapps-page
 

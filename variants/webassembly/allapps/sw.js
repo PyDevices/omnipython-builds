@@ -18,6 +18,8 @@ const FILES = [
   "micropython.wasm",
   "allapps.json",
 ];
+// Kept when first fetched rather than with the page.
+const LATER = /\/(detect\.mjs|ort\/[^/]+)$/;
 
 self.addEventListener("install", (event) => {
   // "no-cache" asks the server whether its copy changed, so a build never
@@ -42,5 +44,11 @@ self.addEventListener("fetch", (event) => {
   // Every address of the page (?home=watch, ?app=clock) is the same page.
   const key = request.mode === "navigate" ? "./" : request;
   event.respondWith(caches.open(CACHE).then((cache) =>
-    cache.match(key, { ignoreSearch: true }).then((hit) => hit || fetch(request))));
+    cache.match(key, { ignoreSearch: true }).then((hit) => hit || fetch(request).then((response) => {
+      // Object detection's ONNX Runtime (30 MB) isn't fetched with the page:
+      // it is kept the first time Detect loads it, so Detect opens offline
+      // after that too. Its model is kept by the page itself.
+      if (response.ok && LATER.test(new URL(request.url).pathname)) cache.put(request, response.clone());
+      return response;
+    }))));
 });
