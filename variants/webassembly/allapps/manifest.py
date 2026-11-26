@@ -97,6 +97,15 @@ for _name in sorted(_library):
     # stderr: make reads the C module list from this manifest's stdout.
     sys.stderr.write("allapps: %s goes in without %s (viper or assembler)\n" % (_name, ", ".join(_left)))
     package(_name, files=_files, base_path=_root, opt=3)
+# A page needs files a board's firmware leaves out: midiports freezes only
+# its board transports, and a browser reads MIDI through Web MIDI and finds
+# it in Connections through endpoints.
+_for_pages = {"midiports": ("webmidi.py", "endpoints.py", "tabs.py")}
+for _name in sorted(_for_pages):
+    if _name not in _library:
+        continue
+    _have = [f for f in _for_pages[_name] if os.path.isfile(os.path.join(_tree, _name, _name, f))]
+    package(_name, files=_have, base_path=os.path.join(_tree, _name), opt=3)
 for _name in sorted(_upstream):
     require(_name, opt=3)
 
