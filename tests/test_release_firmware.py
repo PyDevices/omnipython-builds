@@ -288,7 +288,7 @@ class Assemble(unittest.TestCase):
         names = {f["name"] for b in doc["builds"] for f in b["files"]}
         for name in names:
             self.assertTrue((self.out / name).is_file(), name)
-        self.assertTrue(doc["preview"])  # v1.30.0-preview-160 and CircuitPython alpha: never published
+        self.assertTrue(doc["preview"])  # v1.30.0-preview-160 and CircuitPython alpha: a pre-release
 
     def test_firmware_json_records_the_pins_and_the_run(self):
         doc = json.loads((self.out / "firmware.json").read_text()) if self.run_assemble() else None
@@ -696,7 +696,7 @@ class DraftRelease(unittest.TestCase):
 
     def test_the_notes_warn_name_every_board_and_say_how_to_verify(self):
         text = rf.notes(self.doc)
-        self.assertIn("Staged, not for release", text)
+        self.assertIn("Built on preview interpreters", text)
         self.assertIn("secrets.py", text)
         self.assertIn("gh attestation verify", text)
         for b in self.doc["builds"]:

@@ -7,6 +7,7 @@
     PYTHONPATH=tests python3 -m unittest test_stage_firmware_page -v
 """
 import json
+import html
 import shutil
 import sys
 import tempfile
@@ -19,8 +20,12 @@ import release_firmware as rf
 import stage_firmware_page as sp
 from test_release_firmware import fake_set
 
+URL = "https://github.com/PyDevices/omnipython-builds/releases/download/staged-20261020/"
 INTERP = {"tag": "v0.5.5", "files": {"micropython": {"sha256": "0" * 64, "size": 1, "platform": "linux-x86_64",
                                                      "version": "x"}}}
+INTERP_REL = {"tag_name": "v0.5.5", "html_url": "https://github.com/PyDevices/omnipython/releases/tag/v0.5.5",
+              "assets": [{"name": "micropython", "size": 1,
+                          "browser_download_url": "https://example.invalid/v0.5.5/micropython"}]}
 
 
 class Stage(unittest.TestCase):
@@ -33,75 +38,60 @@ class Stage(unittest.TestCase):
         self.fw = self.root / "fw"
         self.doc = rf.assemble(indir, self.fw, False, "staged-20261020", "https://run")
         self.page = self.root / "page"
+        names = {f["name"]: f["size"] for b in self.doc["builds"] for f in b["files"]}
+        self.release = {"tag_name": "staged-20261020", "name": "OmniPython firmware test", "draft": False,
+                        "html_url": "https://github.com/PyDevices/omnipython-builds/releases/tag/staged-20261020",
+                        "assets": [{"name": n, "size": sz, "browser_download_url": URL + n}
+                                   for n, sz in names.items()]}
 
-    def test_files_manifests_and_firmware_json_land(self):
-        sp.stage(self.fw, self.page)
-        served = {f["name"] for b in self.doc["builds"]
-                  for f in b["files"] if f["role"] in ("flash", "wifi", "romfs", "romfs-files", "uf2")}
-        self.assertEqual({p.name for p in (self.page / "files").iterdir()}, served)
-        self.assertEqual(len(served), 31)
+    def test_the_page_links_every_image_on_the_release(self):
+        page = sp.stage(self.doc, self.release, self.page)
+        self.assertEqual((self.page / "index.html").read_text(), page)
         self.assertEqual(json.loads((self.page / "firmware.json").read_text()), self.doc)
-        ids = sorted(p.stem for p in (self.page / "manifests").iterdir())
-        self.assertEqual(ids, sorted(b["id"] for b in self.doc["builds"] if b["chip"] in sp.CHIP_FAMILY))
-        self.assertFalse((self.page / "interpreters.json").exists())
+        self.assertEqual(sorted(p.name for p in self.page.iterdir()), ["firmware.json", "index.html"])
+        text = html.unescape(page)
+        for b in self.doc["builds"]:
+            self.assertIn(b["label"], text)
+            for f in b["files"]:
+                self.assertIn(URL + f["name"], text)
+        self.assertIn("esptool --chip esp32p4 write-flash 0x2000 ", text)
+        self.assertIn("--preview", text)
+        self.assertIn("gh attestation verify", text)
 
-    def test_a_giga_serves_its_images_and_romfs_zip_and_has_no_manifest(self):
-        sp.stage(self.fw, self.page)
+    def test_the_giga_lists_its_three_images_in_order(self):
+        text = html.unescape(sp.stage(self.doc, self.release, self.page))
         giga = next(b for b in self.doc["builds"] if b["id"] == "mp-giga-shield")
-        for role in ("flash", "wifi", "romfs", "romfs-files"):
-            name = next(f["name"] for f in giga["files"] if f["role"] == role)
-            self.assertTrue((self.page / "files" / name).is_file(), name)
-        self.assertFalse((self.page / "manifests" / "mp-giga-shield.json").exists())
+        order = [next(f["name"] for f in giga["files"] if f["role"] == r) for r in ("wifi", "romfs", "flash")]
+        at = [text.index("-D " + n) for n in order]
+        self.assertEqual(at, sorted(at))
 
-    def test_a_giga_wifi_image_that_does_not_match_its_sha256_is_refused(self):
-        giga = next(b for b in self.doc["builds"] if b["id"] == "mp-giga-shield")
-        wifi = next(f for f in giga["files"] if f["role"] == "wifi")
-        (self.fw / wifi["name"]).write_bytes(b"not the wifi image")
-        with self.assertRaisesRegex(sp.Failed, "firmware1.*does not match the sha256"):
-            sp.stage(self.fw, self.page)
-
-    def test_the_manifest_writes_the_image_at_its_flash_offset(self):
-        sp.stage(self.fw, self.page)
-        m = json.loads((self.page / "manifests" / "mp-p4-devkit.json").read_text())
-        self.assertEqual(m["builds"][0]["chipFamily"], "ESP32-P4")
-        self.assertEqual(m["builds"][0]["parts"][0]["offset"], 0x2000)
-        self.assertTrue(m["new_install_prompt_erase"])
-        path = m["builds"][0]["parts"][0]["path"]
-        self.assertTrue((self.page / "manifests" / path).resolve().is_file())
-        m = json.loads((self.page / "manifests" / "cp-p4-devkit.json").read_text())
-        self.assertEqual(m["builds"][0]["parts"][0]["offset"], 0)
-        m = json.loads((self.page / "manifests" / "mp-s3-lcd7.json").read_text())
-        self.assertEqual(m["builds"][0]["chipFamily"], "ESP32-S3")
-
-    def test_a_second_set_replaces_the_first(self):
-        sp.stage(self.fw, self.page)
-        (self.page / "files" / "old-set.bin").write_bytes(b"x")
-        (self.page / "manifests" / "old.json").write_text("{}")
-        sp.stage(self.fw, self.page, INTERP)
-        self.assertFalse((self.page / "files" / "old-set.bin").exists())
-        self.assertFalse((self.page / "manifests" / "old.json").exists())
-        self.assertEqual(json.loads((self.page / "interpreters.json").read_text())["tag"], "v0.5.5")
-        sp.stage(self.fw, self.page)
-        self.assertFalse((self.page / "interpreters.json").exists())
-
-    def test_a_changed_file_is_refused(self):
-        name = next(f["name"] for b in self.doc["builds"] for f in b["files"] if f["role"] == "flash")
-        with open(self.fw / name, "r+b") as f:
-            f.write(b"\x00")
-        with self.assertRaises(sp.Failed) as cm:
-            sp.stage(self.fw, self.page)
-        self.assertIn("sha256", str(cm.exception))
+    def test_a_draft_is_refused(self):
+        self.release["draft"] = True
+        with self.assertRaisesRegex(sp.Failed, "draft"):
+            sp.stage(self.doc, self.release, self.page)
         self.assertFalse(self.page.exists())
 
-    def test_a_missing_file_is_refused(self):
-        name = next(f["name"] for b in self.doc["builds"] for f in b["files"] if f["role"] == "uf2")
-        (self.fw / name).unlink()
-        with self.assertRaises(sp.Failed):
-            sp.stage(self.fw, self.page)
+    def test_a_file_missing_from_the_release_is_refused(self):
+        self.release["assets"].pop()
+        with self.assertRaisesRegex(sp.Failed, "is not on release"):
+            sp.stage(self.doc, self.release, self.page)
 
-    def test_interpreters_without_a_tag_are_refused(self):
-        with self.assertRaises(sp.Failed):
-            sp.stage(self.fw, self.page, {"files": {}})
+    def test_a_file_of_another_size_is_refused(self):
+        self.release["assets"][0]["size"] += 1
+        with self.assertRaisesRegex(sp.Failed, "bytes on the release"):
+            sp.stage(self.doc, self.release, self.page)
+
+    def test_another_release_is_refused(self):
+        self.release["tag_name"] = "staged-other"
+        with self.assertRaisesRegex(sp.Failed, "firmware.json names"):
+            sp.stage(self.doc, self.release, self.page)
+
+    def test_the_interpreters_are_linked_or_said_to_come_later(self):
+        text = sp.stage(self.doc, self.release, self.page, INTERP, INTERP_REL)
+        self.assertIn("https://example.invalid/v0.5.5/micropython", text)
+        self.assertIn("Linux x86-64", text)
+        text = sp.stage(self.doc, self.release, self.page)
+        self.assertIn("arrive with the next OmniPython release", text)
 
     def test_newest_final_with_interpreters(self):
         asset = [{"name": "interpreters.json"}]
@@ -110,7 +100,7 @@ class Stage(unittest.TestCase):
                {"tag_name": "v0.7.5", "draft": True, "assets": asset},
                {"tag_name": "v0.5.5", "assets": asset},
                {"tag_name": "v0.5.4", "assets": asset}]
-        self.assertEqual(sp.newest_final_with_interpreters(rel), "v0.5.5")
+        self.assertEqual(sp.newest_final_with_interpreters(rel)["tag_name"], "v0.5.5")
         self.assertIsNone(sp.newest_final_with_interpreters(rel[:3]))
 
 

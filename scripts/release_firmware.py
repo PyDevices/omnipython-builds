@@ -27,8 +27,8 @@ on Linux or WSL.
     release_firmware.py notes <firmware.json> [--previous FILE] [--out FILE]
         Check that the set's tag may go on a draft Release and write the
         Release's notes (to FILE, or stdout). A set built from preview pins
-        only takes a tag that starts with "staged-", so publishing it by
-        accident would look wrong. With --previous, the firmware.json of the
+        only takes a tag that starts with "staged-", and its notes say the
+        interpreters are previews, so a published one reads as a pre-release. With --previous, the firmware.json of the
         set to compare with, the notes name every board whose
         filesystem this set moves. This is what the workflow's draft step runs.
 
@@ -711,7 +711,7 @@ def version_numbers(describe):
 
 
 def preview_reasons(upstream_describe, cp_version):
-    """Why a set built from these pins is a preview (D3: such a set is never published)."""
+    """Why a set built from these pins is a preview (D3: it is staged, and published only as a pre-release)."""
     reasons = []
     if "preview" in (upstream_describe or "") or re.search(r"-\d+-g[0-9a-f]+$", upstream_describe or ""):
         reasons.append(f"MicroPython is {upstream_describe}, not a tagged release")
@@ -798,7 +798,7 @@ def assemble(indir, out, pico2, tag, run_url, now=None):
 
 
 def summary(doc):
-    lines = [f"Firmware set {doc['tag']}" + (" (preview pins: never published)" if doc["preview"] else ""),
+    lines = [f"Firmware set {doc['tag']}" + (" (preview pins: a pre-release)" if doc["preview"] else ""),
              "", "| Cell | Build | Flash image | Offset | Filesystem | Build time |", "|---|---|---:|---|---|---:|"]
     for b in doc["builds"]:
         main = next(f for f in b["files"] if f["role"] in ("flash", "uf2"))
@@ -871,8 +871,8 @@ def notes(doc, previous=None):
     tag = doc["tag"]
     lines = []
     if doc["preview"]:
-        lines += ["> **Staged, not for release.** " + "; ".join(doc["preview_reasons"]) +
-                  ". This draft stays private until a set is built from tagged versions.", ""]
+        lines += ["> **Built on preview interpreters.** " + "; ".join(doc["preview_reasons"]) +
+                  ". Published, this set is a pre-release, and its tag starts with `staged-`.", ""]
     lines += [f"OmniPython firmware {tag}: MicroPython {doc['micropython']}"
               + (f" and CircuitPython-compatible {doc['circuitpython']}" if doc.get("circuitpython") else "")
               + f", built by [this run]({doc['run']}) on {doc['built'][:10]}.", ""]

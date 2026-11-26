@@ -126,19 +126,28 @@ draft is seen only by people who can push to the repository, and GitHub makes no
 tag until someone publishes it.
 
 The tag is `v<MicroPython version>-<YYYYMMDD>`. A set built from a preview
-MicroPython or CircuitPython only takes a tag that starts with `staged-`, so a
-preview set can't be published by accident.
+MicroPython or CircuitPython only takes a tag that starts with `staged-`, is
+created as a pre-release, and its notes open by saying the interpreters are
+previews.
+
+### Publish a set
+
+Open the draft on the Releases page, give it a title that names the OmniPython
+version it carries, and press Publish. That makes the tag. A preview set stays
+a pre-release, so it is never marked Latest, and `mcuctl firmware download
+--source omnipython` takes it with `--preview`. Read the notes once before you publish:
+they are the release's description from then on.
 
 ### The download page
 
-[`scripts/stage_firmware_page.py`](scripts/stage_firmware_page.py) lays a set out
-for the site's `firmware/` folder: `firmware.json`, the flash images the page
-offers and the browser flasher fetches, an ESP Web Tools manifest per ESP32
-build, and the desktop interpreters' `interpreters.json` from the newest
-omnipython final that has one.
+[`scripts/stage_firmware_page.py`](scripts/stage_firmware_page.py) writes the
+site's `firmware/` page for a published set: each board's image as a link to
+the release, the command that writes it, and the desktop interpreters of the
+newest omnipython final. The images stay on the release. It refuses a draft, and
+a set whose release is missing a file or has one of another size.
 
 ```bash
-python3 scripts/stage_firmware_page.py <downloaded firmware artifact> <site checkout>/firmware \
+python3 scripts/stage_firmware_page.py <tag> <site checkout>/firmware \
     --interpreters-from-release PyDevices/omnipython
 ```
 
