@@ -524,7 +524,7 @@ index 000000000..df251a7a1
 +static void socket_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
 +    (void)kind;
 +    mp_obj_socket_t *self = MP_OBJ_TO_PTR(self_in);
-+    mp_printf(print, "<_socket %d>", self->fd);
++    mp_printf(print, "<_socket %d>", (int)self->fd);
 +}
 +
 +static mp_uint_t socket_read(mp_obj_t o_in, void *buf, mp_uint_t size, int *errcode) {
