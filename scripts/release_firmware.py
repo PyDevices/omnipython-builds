@@ -10,7 +10,7 @@ on Linux or WSL.
 
     release_firmware.py matrix [--pico2]
         Print the build matrix as JSON for the workflow: one row per cell.
-        The Pico 2's and the Pico Plus 2 W's rows are left out unless --pico2 is given.
+        The Pico 2's row is left out unless --pico2 is given.
 
     release_firmware.py build <cell> <out-dir>
         Build one cell with build_mp.py and put its files, a sha256 of each and
@@ -69,8 +69,8 @@ MB = 1024 * 1024
 
 # A cell is one file set for one board. `chip` and `flash` are what the flash
 # image is written with: `offset` is the flash address of the merged image's
-# first byte (MicroPython's P4 image starts at its bootloader, 0x2000;
-# CircuitPython's is padded from 0). The bootloader itself is at BOOTLOADER.
+# first byte (MicroPython's image starts at its bootloader: 0x1000 on the ESP32,
+# 0x2000 on the C5, P4 and S31, 0 on the S3; CircuitPython's is padded from 0). The bootloader itself is at BOOTLOADER.
 # `deps` names the cache the workflow keeps its toolchains in. An stm32 cell
 # also has `base`, where the chip's flash starts: `offset` is an address there,
 # and the Wi-Fi firmware goes to WIFI_OFFSET in the QSPI flash.
@@ -83,27 +83,45 @@ MB = 1024 * 1024
 # purpose, and the notes of the release that ships it say so (`notes --previous`).
 # A cell with `autosize=True` and no `fs` lets build_mp.py grow the app slot to
 # the image instead, so the filesystem is whatever flash is left: it can move
-# with any release, and the notes say so whenever it does.
+# with any release, and the notes say so whenever it does. A cell with
+# `board_table=True` builds with --no-autosize, in the partition table its board
+# variant names: an image that outgrows the app slot there fails its build, and the
+# filesystem stays where that table puts it.
+#
+# A cell's files are named for its board and variant. `stem` names them instead
+# when another cell builds the same board and variant.
+
+# Every MicroPython ESP32 cell with 16 MB of flash or more builds FULL: "all" and the opt-in
+# modules beside it. Each one builds as nothing on a chip it can't run on: btclassic is for the
+# ESP32 and the S31, openthread for the S31, tflite and vision for the S3 and the P4 (tflite on
+# the S31 too). The rows spell it out, since scripts/ci_scope.py reads them as literals.
+FULL = "all,btclassic,openthread,tflite,vision,picotts,pdwidgets"
+
 CELLS = [
-    # The three P4 images add the opt-in vision and tflite modules ("all" leaves them out) for the
-    # object-detection and wake-word programs.
     # One image for the revision 3 P4 boards with a C6 on the DEV-KIT's pins: the DEV-KIT (16 MB) and
     # the Pico-sized ESP32-P4-WIFI6 (32 MB). The size of PSRAM is read at boot, and a 16 MB image is
     # the one a 16 MB board can start (an image written for 32 MB doesn't start on 16), so a 32 MB
     # board runs it and keeps the table it has when you write only the app.
     dict(id="mp-p4-devkit", label="ESP32-P4-WIFI6-DEV-KIT and ESP32-P4-WIFI6 (Pico-sized)", interpreter="micropython", port="esp32",
-         board="ESP32_GENERIC_P4", variant="WIFI6_DEV_KIT_H2", flash="16MB", modules="all,vision,tflite",
-         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="6976K"),
+         board="ESP32_GENERIC_P4", variant="WIFI6_DEV_KIT_H2", flash="16MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
+         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="6400K"),
     # A P4 before chip revision 3: the bootloader refuses a revision 3 image on it, and a revision 3
     # chip refuses this one.
     dict(id="mp-p4-panel", label="ESP32-P4-WIFI6-Touch-LCD-4B (P4 before revision 3)", interpreter="micropython", port="esp32",
-         board="ESP32_GENERIC_P4", variant="PRE_REV3_C6_WIFI", flash="32MB", modules="all,vision,tflite",
-         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="23360K"),
+         board="ESP32_GENERIC_P4", variant="PRE_REV3_C6_WIFI", flash="32MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
+         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="22784K"),
     # The P4X-EYE wires its C6 to other pins than the DEV-KIT's (compiled into the image) and puts the
     # REPL on the USB Serial/JTAG port the DEV-KIT's image moves, so it can't share one.
     dict(id="mp-p4-eye", label="ESP32-P4X-EYE", interpreter="micropython", port="esp32",
-         board="ESP32_GENERIC_P4", variant="P4X_EYE", flash="16MB", modules="all,vision,tflite",
-         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="6976K"),
+         board="ESP32_GENERIC_P4", variant="P4X_EYE", flash="16MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
+         chip="esp32p4", offset=0x2000, kind="esp32", deps="idf", fs="6400K"),
+    # The ESP32-S31 builds on ESP-IDF 6.1, from a tree of its own (see build_mp.py).
+    dict(id="mp-s31-box", label="ESP32-S31-Touch-LCD-4.3C", interpreter="micropython", port="esp32",
+         board="ESP32_GENERIC_S31", variant="LCD_4_3C", flash="16MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
+         chip="esp32s31", offset=0x2000, kind="esp32", deps="idf6", autosize=True),
+    dict(id="mp-s31-zero", label="ESP32-S31-Zero", interpreter="micropython", port="esp32",
+         board="ESP32_GENERIC_S31", variant="ZERO", flash="32MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
+         chip="esp32s31", offset=0x2000, kind="esp32", deps="idf6", autosize=True),
     dict(id="mp-s3-lcd7", label="ESP32-S3-Touch-LCD-7", interpreter="micropython", port="esp32",
          board="ESP32_GENERIC_S3", variant="LCD_7", flash="8MB", modules="all",
          chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
@@ -111,18 +129,23 @@ CELLS = [
          board="ESP32_GENERIC_S3", variant="LCD_4_3", flash="8MB", modules="all",
          chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
     # The generic S3 images, for the boards that have no cell of their own. Each is a plain
-    # upstream board with our S3 settings, no board variant.
-    # Octal PSRAM, 16 MB flash: Adafruit Qualia ESP32-S3, LilyGO T-Display-S3, Sunton/LilyGO T-HMI
-    # and other octal-PSRAM S3 boards.
-    dict(id="mp-s3-octal", label="ESP32-S3 with octal PSRAM (Qualia ESP32-S3, T-Display-S3, T-HMI)",
+    # upstream board with our S3 settings and no board variant of its own.
+    # Octal PSRAM, 16 MB flash: Adafruit Qualia ESP32-S3, LilyGO T-Display-S3, T-HMI, T-RGB,
+    # T-Watch S3 and other octal-PSRAM S3 boards.
+    dict(id="mp-s3-octal", label="ESP32-S3 with octal PSRAM (Qualia ESP32-S3, T-Display-S3, T-HMI, T-RGB, T-Watch S3)",
          interpreter="micropython", port="esp32", board="ESP32_GENERIC_S3", variant="SPIRAM_OCT", flash="16MB",
-         modules="all", chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
-    # Quad PSRAM (or none found), 8 MB flash: the Adafruit QT Py ESP32-S3 that has PSRAM (2 MB),
-    # WT32-SC01 Plus, Unexpected Maker FeatherS3 and the other quad-PSRAM boards. The octal image
-    # finds no PSRAM on those two, and the FeatherS3 boot-loops on it. 8 MB is the floor that fits
-    # the most: an image written with an 8 MB header runs on a board with 16 MB or more, keeping
-    # the rest of its flash unused, but a 16 MB image won't boot on an 8 MB board.
-    dict(id="mp-s3", label="ESP32-S3 with quad PSRAM (QT Py ESP32-S3 with PSRAM, WT32-SC01 Plus, FeatherS3, most 8 MB S3 boards)",
+         modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets", chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
+    # Quad PSRAM (or none found), 16 MB flash. The octal image finds no PSRAM on these, and the
+    # FeatherS3 boot-loops on it.
+    dict(id="mp-s3-16mb", label="ESP32-S3 with quad PSRAM, 16 MB flash (WT32-SC01 Plus, Unexpected Maker FeatherS3)",
+         interpreter="micropython", port="esp32", board="ESP32_GENERIC_S3", variant=None, flash="16MB",
+         modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets", chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True,
+         stem="esp32_generic_s3-16mb"),
+    # Quad PSRAM (or none found), 8 MB flash: the Adafruit QT Py ESP32-S3 that has PSRAM (2 MB) and
+    # the other 8 MB quad-PSRAM boards. An image written with an 8 MB header also runs on a board
+    # with 16 MB or more, keeping the rest of its flash unused, but a 16 MB image won't boot on an
+    # 8 MB board.
+    dict(id="mp-s3", label="ESP32-S3 with quad PSRAM, 8 MB flash (QT Py ESP32-S3 with PSRAM, most 8 MB S3 boards)",
          interpreter="micropython", port="esp32", board="ESP32_GENERIC_S3", variant=None, flash="8MB",
          modules="all", chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
     # No PSRAM, 8 MB flash: an S3 board with only its internal RAM, such as the Adafruit QT Py
@@ -137,8 +160,22 @@ CELLS = [
          modules="omnipython,displayif,pygraphics,pngio,palettes,iconkit,ttfio,icons,svgio,mdns,jpegio,ulab",
          chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
     dict(id="mp-s3-tembed", label="LilyGO T-Embed S3", interpreter="micropython", port="esp32",
-         board="ESP32_GENERIC_S3", variant="T_EMBED", flash="16MB", modules="all",
+         board="ESP32_GENERIC_S3", variant="T_EMBED", flash="16MB", modules="all,btclassic,openthread,tflite,vision,picotts,pdwidgets",
          chip="esp32s3", offset=0, kind="esp32", deps="idf", autosize=True),
+    dict(id="mp-xiao-c5", label="Seeed Studio XIAO ESP32-C5", interpreter="micropython", port="esp32",
+         board="SEEED_XIAO_ESP32C5", variant=None, flash="8MB", modules="all",
+         chip="esp32c5", offset=0x2000, kind="esp32", deps="idf", autosize=True),
+    # The ESP32-PICO-V3-02 system in package: the QT Py ESP32 Pico, and the Feather ESP32 V2, whose
+    # ESP32-PICO-MINI-02 module carries the same one. 8 MB flash, 2 MB PSRAM.
+    dict(id="mp-esp32-pico", label="ESP32-PICO-V3-02 boards (Adafruit QT Py ESP32 Pico, Feather ESP32 V2)",
+         interpreter="micropython", port="esp32", board="ESP32_GENERIC", variant="QTPY_PICO", flash="8MB",
+         modules="all,btclassic", chip="esp32", offset=0x1000, kind="esp32", deps="idf", autosize=True),
+    # 4 MB of flash holds only what its Bluetooth receiver needs, in the board's own partition table,
+    # with appkit and the libraries under it frozen by the variant.
+    dict(id="mp-esp32-audiokit", label="Ai-Thinker ESP32-Audio-Kit (ESP32-A1S)", interpreter="micropython",
+         port="esp32", board="ESP32_GENERIC", variant="AUDIO_KIT", flash="4MB",
+         modules="omnipython,lvgl,btclassic,audioif,audiodsp,ttfio,icons,svgio",
+         chip="esp32", offset=0x1000, kind="esp32", deps="idf", board_table=True),
     dict(id="cp-p4-devkit", label="ESP32-P4-WIFI6-DEV-KIT", interpreter="circuitpython", port="espressif",
          board="waveshare_esp32p4_wifi6_dev_kit", variant=None, flash="16MB",
          modules="audiodsp,audioinstruments,audioeffects,pygraphics,pngio,tsmux,ppa,jpegio,cameraif,castif,h264enc,usbhost,omnipython,palettes,ttfio,icons,lvgl",
@@ -170,17 +207,39 @@ CELLS = [
     dict(id="cp-feather-rp2040", label="Adafruit Feather RP2040 + display wing", interpreter="circuitpython",
          port="raspberrypi", board="feather_rp2040_lvgl", variant=None, flash="8MB",
          modules="pygraphics,pngio,tsmux,omnipython,palettes,ttfio,icons,lvgl", chip="rp2040", offset=None, kind="rp2", deps="none"),
+    # The firmware lives in the chip's 2 MB of flash, and every module's Python goes to the ROMFS
+    # image in the QSPI flash, so this is what still fits beside LVGL. tsmux, pngio and svgio don't.
     dict(id="mp-giga-shield", label="Arduino GIGA R1 WiFi + GIGA Display Shield", interpreter="micropython",
          port="stm32", board="ARDUINO_GIGA", variant="DISPLAY_SHIELD", flash="2MB",
-         modules="displayif,lvgl,audiodsp,audioif,ulab,usbhost,pygraphics,ttfio,icons", chip="stm32h747", offset=0x08040000, base=0x08000000,
-         kind="stm32", deps="none"),
-    # Off by default until a board is on the bench to run it on.
+         modules="displayif,lvgl,audiodsp,audioif,ulab,usbhost,pygraphics,ttfio,jpegio,audiocomponents,audioeffects,"
+                 "audioinstruments,iconkit,icons,micropython-lib,omnipython,palettes,pdwidgets",
+         chip="stm32h747", offset=0x08040000, base=0x08000000, kind="stm32", deps="none"),
+    # Off by default: no board runs it yet.
     dict(id="mp-pico2", label="Raspberry Pi Pico 2", interpreter="micropython", port="rp2",
          board="RPI_PICO2", variant=None, flash="4MB", modules="all",
          chip="rp2350", offset=None, kind="rp2", deps="none", fs="704K", optional=True),
     dict(id="mp-pico-plus2-w", label="Pimoroni Pico Plus 2 W", interpreter="micropython", port="rp2",
-         board="RPI_PICO2_W", variant="PIMORONI_PICO_PLUS2_W", flash="16MB", modules="all",
-         chip="rp2350", offset=None, kind="rp2", deps="none", fs="12416K", optional=True),
+         board="RPI_PICO2_W", variant="PIMORONI_PICO_PLUS2_W", flash="16MB", modules="all,btclassic,pdwidgets",
+         chip="rp2350", offset=None, kind="rp2", deps="none", fs="11584K"),
+    # The RP2040s have 264 KB of RAM and no PSRAM: enough for LVGL and a display, not for the apps.
+    # The Feather RP2040 DVI runs the Feather's image, without DVI.
+    dict(id="mp-feather-rp2040", label="Adafruit Feather RP2040", interpreter="micropython", port="rp2",
+         board="ADAFRUIT_FEATHER_RP2040", variant=None, flash="8MB", modules="all",
+         chip="rp2040", offset=None, kind="rp2", deps="none", fs="4160K"),
+    dict(id="mp-qtpy-rp2040", label="Adafruit QT Py RP2040", interpreter="micropython", port="rp2",
+         board="ADAFRUIT_QTPY_RP2040", variant=None, flash="8MB", modules="all",
+         chip="rp2040", offset=None, kind="rp2", deps="none", fs="4160K"),
+    # "all" doesn't fit 4 MB of flash.
+    dict(id="mp-rp2040-plus", label="Waveshare RP2040-Plus (4 MB)", interpreter="micropython", port="rp2",
+         board="WAVESHARE_RP2040_PLUS", variant=None, flash="4MB",
+         modules="displayif,lvgl,pygraphics,omnipython,svgio,pngio,jpegio,ttfio,icons,palettes,iconkit",
+         chip="rp2040", offset=None, kind="rp2", deps="none", fs="1984K"),
+    # 2 MB RP2040 boards with no board definition of their own, such as the Waveshare
+    # RP2040-Touch-LCD-1.28.
+    dict(id="mp-pico", label="Raspberry Pi Pico and other 2 MB RP2040 boards (Waveshare RP2040-Touch-LCD-1.28)",
+         interpreter="micropython", port="rp2", board="RPI_PICO", variant=None, flash="2MB",
+         modules="displayif,lvgl,pygraphics,omnipython", chip="rp2040", offset=None, kind="rp2", deps="none",
+         fs="320K"),
 ]
 
 # What each kind of cell must hand over, as (role, file in the build dir, required).
@@ -262,14 +321,27 @@ def keeps_fs(c):
     return c["interpreter"] == "micropython" and c["kind"] in ("esp32", "rp2")
 
 
+def asset_stem(c):
+    """What a cell's file names start from, after omnipython-mp- or omnipython-cp-."""
+    return c.get("stem") or "-".join(p.lower() for p in (c["board"], c["variant"]) if p)
+
+
 def check_cells():
     """Every cell whose filesystem build_mp.py places names the size it keeps,
-    or says it autosizes."""
+    or says it autosizes or keeps its board's table, and no two cells' files
+    share a name."""
     problems = []
+    stems = {}
     for c in CELLS:
-        if c.get("autosize") and (c.get("fs") or c["kind"] != "esp32"):
+        key = (c["interpreter"], asset_stem(c))
+        if key in stems:
+            problems.append(f"{c['id']}: its files would have the names of {stems[key]}'s; give one a stem")
+        stems[key] = c["id"]
+        if c.get("board_table") and (c.get("fs") or c.get("autosize") or c["kind"] != "esp32"):
+            problems.append(f"{c['id']}: board_table is for an esp32 cell that names no fs and doesn't autosize")
+        elif c.get("autosize") and (c.get("fs") or c["kind"] != "esp32"):
             problems.append(f"{c['id']}: autosize is for an esp32 cell that names no fs")
-        elif keeps_fs(c) and not c.get("autosize") and not size_bytes(c.get("fs")):
+        elif keeps_fs(c) and not c.get("autosize") and not c.get("board_table") and not size_bytes(c.get("fs")):
             problems.append(f"{c['id']}: names no filesystem to keep (fs={c.get('fs')!r}), so a release "
                             "could move it and empty every board that updates")
         elif not keeps_fs(c) and "fs" in c:
@@ -300,10 +372,11 @@ def matrix(pico2, only=()):
 
 # ---- build -----------------------------------------------------------------
 
-def micropython_version():
+def micropython_version(tree="micropython"):
     """The checkout's own version, vX.Y.Z with -preview while upstream says so.
-    It names the set's files; the image's own sys.version tag is checked apart."""
-    h = (REPO / "micropython" / "py" / "mpconfig.h").read_text()
+    It names the set's files; the image's own sys.version tag is checked apart.
+    The ESP32-S31 cells build from their own tree, micropython-s31."""
+    h = (REPO / tree / "py" / "mpconfig.h").read_text()
     nums = [re.search(rf"define MICROPY_VERSION_{k} (\d+)", h).group(1) for k in ("MAJOR", "MINOR", "MICRO")]
     pre = int(re.search(r"define MICROPY_VERSION_PRERELEASE (\d+)", h).group(1))
     return "v" + ".".join(nums) + ("-preview" if pre else "")
@@ -351,6 +424,8 @@ def build_args(c):
         args += ["--flash", c["flash"]]
     if c.get("fs"):
         args += ["--keep-fs", c["fs"]]
+    if c.get("board_table"):
+        args += ["--no-autosize"]
     args += ["--modules", c["modules"]]
     return args
 
@@ -415,7 +490,7 @@ def build(cell_id, out):
         meta["frozen_libraries"] = record["frozen_libraries"]
     meta["files"] = files
     meta["build_seconds"] = seconds
-    meta["interpreter_version"] = (micropython_version() if c["interpreter"] == "micropython"
+    meta["interpreter_version"] = (micropython_version("micropython-s31" if c.get("deps") == "idf6" else "micropython") if c["interpreter"] == "micropython"
                                    else record.get("circuitpython_version"))
     meta["module_revisions"] = {n: m for n, m in sorted((record.get("module_revisions") or {}).items())}
     if c["interpreter"] == "circuitpython":
@@ -437,7 +512,7 @@ def build(cell_id, out):
 # ---- checks ----------------------------------------------------------------
 
 ESP_IMAGE_MAGIC = 0xE9
-BOOTLOADER = {"esp32s3": 0x0, "esp32p4": 0x2000}
+BOOTLOADER = {"esp32": 0x1000, "esp32s3": 0x0, "esp32c5": 0x2000, "esp32p4": 0x2000, "esp32s31": 0x2000}
 UF2_MAGICS = (b"UF2\n", b"WQ]\x9e", b"\x30\x6f\xb1\x0a")  # start magic 0, 1 and the end magic
 # Smallest sizes a firmware that carries this interpreter and its modules can have.
 MIN_BYTES = {"esp32": 1 * MB, "espressif": 1 * MB, "rp2": 512 * 1024, "stm32": 1 * MB}
@@ -476,7 +551,7 @@ def uf2_end(blob):
 
 def check_fs(c, meta, data, flash_bytes):
     """A cell that keeps its filesystem: the build put it where the cell says,
-    so a board that updates keeps its files. An autosize cell has no size to keep:
+    so a board that updates keeps its files. An autosize or board_table cell has no size to keep:
     its filesystem is recorded, not checked. Adds fs_offset and fs_bytes to meta."""
     want = size_bytes(c.get("fs"))
     if c["kind"] == "esp32":
@@ -615,7 +690,7 @@ def check_cell(d, c):
             problems.append(f"{c['id']}: {data['uf2'].name} has no UF2 block magic")
         elif len(blob) // 512 * 256 > flash_bytes:
             problems.append(f"{c['id']}: {data['uf2'].name} carries more than the {c['flash']} flash holds")
-    if c.get("fs") or c.get("autosize"):
+    if c.get("fs") or c.get("autosize") or c.get("board_table"):
         problems += check_fs(c, meta, data, flash_bytes)
     for role in ("elf", "map"):
         if role in data and data[role].stat().st_size < 1024:
@@ -682,7 +757,7 @@ def assemble(indir, out, pico2, tag, run_url, now=None):
         m = metas[c["id"]]
         d = indir / c["id"]
         kind = "mp" if c["interpreter"] == "micropython" else "cp"
-        stem = "-".join(p.lower() for p in (c["board"], c["variant"]) if p)
+        stem = asset_stem(c)
         if kind == "mp":
             base = f"omnipython-mp-{stem}-{tag}"
         else:

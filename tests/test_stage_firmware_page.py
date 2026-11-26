@@ -39,10 +39,10 @@ class Stage(unittest.TestCase):
         served = {f["name"] for b in self.doc["builds"]
                   for f in b["files"] if f["role"] in ("flash", "wifi", "romfs", "romfs-files", "uf2")}
         self.assertEqual({p.name for p in (self.page / "files").iterdir()}, served)
-        self.assertEqual(len(served), 20)
+        self.assertEqual(len(served), 31)
         self.assertEqual(json.loads((self.page / "firmware.json").read_text()), self.doc)
         ids = sorted(p.stem for p in (self.page / "manifests").iterdir())
-        self.assertEqual(ids, sorted(b["id"] for b in self.doc["builds"] if b["chip"] not in ("rp2040", "stm32h747")))
+        self.assertEqual(ids, sorted(b["id"] for b in self.doc["builds"] if b["chip"] in sp.CHIP_FAMILY))
         self.assertFalse((self.page / "interpreters.json").exists())
 
     def test_a_giga_serves_its_images_and_romfs_zip_and_has_no_manifest(self):

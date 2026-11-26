@@ -62,7 +62,7 @@ class FirmwareCells(unittest.TestCase):
 
     def test_the_cells_parse(self):
         cells, rest = ci_scope.cells_of(SOURCE)
-        self.assertEqual(len(cells), 19)
+        self.assertEqual(len(cells), 29)
         self.assertIn("cp-twatch", cells)
         self.assertTrue(rest)
 

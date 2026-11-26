@@ -95,8 +95,11 @@ from.
 
 ### Each board keeps its filesystem
 
-Every MicroPython esp32 and rp2 cell names the filesystem its boards keep from
-one release to the next (`fs`), and builds with `--keep-fs` at that size. An
+Every MicroPython rp2 cell, and the esp32 cells that say so, names the
+filesystem its boards keep from one release to the next (`fs`), and builds with
+`--keep-fs` at that size. The other esp32 cells either let `build_mp.py` grow the
+app slot to fit (`autosize`), so their filesystem can move, or keep the partition
+table of their board variant (`board_table`, `--no-autosize`). An
 image that outgrows the flash left beside it fails its build, which says what
 size would fit, instead of shipping a set that leaves an updated board with an
 empty filesystem. `assemble` checks each filesystem is where its cell says and
