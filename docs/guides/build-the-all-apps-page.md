@@ -6,6 +6,9 @@ is frozen into one WebAssembly runtime, with everything it imports, so the page
 fetches nothing at run time and no package comes from the index. An app that
 can't work in a browser is still in, and says what it lacks.
 
+It's published at <https://apps.omnipython.org/>, where a browser can install
+it as an app and open it offline.
+
 ## Build it
 
 ```bash
@@ -40,7 +43,9 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 | `index.html` | The page. It boots into Home on an 800x480 screen. |
 | `micropython.mjs`, `micropython.wasm` | The runtime, 0.3 MB and 11.2 MB (4.9 MB gzipped). |
 | `micropython.wasm.provenance` | Its size, hash, patch series and the commit of every source. |
-| `allapps.json` | The apps and omnipython commits it was built from. |
+| `allapps.json` | The apps and omnipython commits it was built from, and the build's id. |
+| `manifest.webmanifest`, `icon.svg`, `icon-maskable.svg` | What makes the page an installable web app: its name, icons and window. |
+| `sw.js` | The service worker, which keeps the page and its runtime so it opens offline. The build writes its id into it. |
 | `detect.mjs`, `ort/` | Object detection: the page side of its `espdl`, and ONNX Runtime Web 1.31.1, which runs the model. |
 
 The page takes `?width=` and `?height=` to size the screen, and `?app=clock`
@@ -139,16 +144,62 @@ The all-apps build is that runtime plus every app and app library, 1 MB
 more, and a page that starts Home. It's built from the apps and omnipython
 refs you choose, not from the pins, and only when someone asks for it.
 
+## Use it from another site
+
+Another page can load the published runtime instead of keeping a copy:
+
+```js
+const { loadMicroPython } = await import("https://apps.omnipython.org/micropython.mjs");
+```
+
+The runtime finds `micropython.wasm` beside itself. GitHub Pages serves both
+with `Access-Control-Allow-Origin: *`, and the wasm as `application/wasm`, so
+any origin may load them. Your page then boots the launcher itself, as
+[Home or Watch](#home-or-watch) says. It always gets the newest published
+build.
+
+## Offline and updates
+
+The page registers `sw.js`, which stores the page, the runtime and the icons
+the first time it runs. After that it opens with no network, at any of its
+addresses (`?home=watch`, `?app=clock`).
+
+Each build has its own id, a hash of the runtime and the page files, which
+`allapps.json` records and `sw.js` carries. When a new build is published,
+the browser notices the changed `sw.js` the next time the page opens and
+fetches the new build beside the old one. The page shows "A new version is
+ready" with a Reload button; the new build takes over when you press it, or
+when every window of the page has closed. The old copy is deleted then.
+
 ## In CI
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)
-workflow runs the same command by hand: open it, choose **Run workflow**,
-and give the two refs. A pull request that changes the page's build runs it
-too, on apps and omnipython `main`. It builds in the webassembly dev
-container, checks that the runtime starts and imports Home and that Object
-detection's page side works (`variants/webassembly/tests/detect.mjs`, with a
-stand-in for ONNX Runtime), and uploads the page as the `allapps-page`
-artifact. It publishes nothing. A job of your own needs the
+workflow builds the page, checks that the runtime starts and imports Home
+and that Object detection's page side works
+(`variants/webassembly/tests/detect.mjs`, with a stand-in for ONNX Runtime),
+and uploads it as the `allapps-page` artifact. On `main` it then asks the
+[apps.omnipython.org](https://github.com/PyDevices/apps.omnipython.org)
+repository to publish that artifact: its workflow downloads the page from
+this run and deploys it to its GitHub Pages site. No build output is
+committed anywhere. The workflow runs:
+
+- when the apps repository publishes a release, which sends an
+  `apps-release` event naming its tag; that tag and omnipython's `main` are
+  built;
+- on a pull request that changes the page's build, its variant or its tests,
+  on apps and omnipython `main`, never publishing;
+- by hand: open the workflow, choose **Run workflow**, and give the two refs.
+  Untick **publish** to build without publishing; a run from any branch but
+  `main` never publishes.
+
+To put an earlier build back, run apps.omnipython.org's publish workflow by
+hand with the run id of the build you want: it deploys that run's artifact
+again, for as long as GitHub keeps it (90 days). For an older build, run this
+workflow by hand with the commits it was made from; every build's
+`allapps.json` names them, and <https://apps.omnipython.org/allapps.json>
+names the ones live now.
+
+A job of your own needs the
 same: a checkout of this repository, emsdk (the dev container's `install.sh`
 packages, or any machine with git, Python 3 and a C toolchain, since the
 build fetches emsdk at its pin), and room for the build tree. Caching `deps/`

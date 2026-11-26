@@ -11,9 +11,10 @@ It fetches the apps repository and the omnipython repository at the refs you
 name (a branch, a tag or a full commit), builds the webassembly port's
 ``allapps`` variant from them with ``build_mp.py``, and writes a folder you
 can serve as it is: ``index.html``, ``micropython.mjs``, ``micropython.wasm``,
-``micropython.wasm.provenance``, ``allapps.json``, which records the
-commits that went in, and ``detect.mjs`` with ONNX Runtime Web in ``ort/``,
-which run Object detection. ``--apps`` and ``--omnipython`` take local checkouts
+``micropython.wasm.provenance``, ``allapps.json``, which records the commits
+that went in, the web app's manifest, icons and service worker, and
+``detect.mjs`` with ONNX Runtime Web in ``ort/``, which run Object detection.
+``--apps`` and ``--omnipython`` take local checkouts
 instead of refs, to try a change before it's pushed.
 
 Serve the folder with any static server, for instance
@@ -37,7 +38,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 ORG = "https://github.com/PyDevices/"
 VARIANT = "allapps"
-PAGE = REPO / "variants" / "webassembly" / VARIANT / "index.html"
+PAGE = REPO / "variants" / "webassembly" / VARIANT
+# The page and what makes it an installable web app: its manifest, icons and
+# service worker, which keeps the page and its runtime for offline use.
+# detect.mjs is Object detection's page side (below).
+PAGE_FILES = ("index.html", "manifest.webmanifest", "icon.svg", "icon-maskable.svg", "sw.js", "detect.mjs")
 BUILD = REPO / "builds" / "webassembly" / VARIANT
 # Every module of this repository ("all"), and pdwidgets, which "all" leaves
 # out, as the shared browser build has.
@@ -50,7 +55,6 @@ RUNTIME = ("micropython.mjs", "micropython.wasm")
 ORT = "onnxruntime-web"
 ORT_SHA512 = "5GeH+bWQ+HxM10z7erGlsWqryrwMbSvm/1tkIsKTT48g0fI19VXVVC435t4t7VsPdSQeS7NmuZPXrQ73k82URw=="
 ORT_FILES = ("ort.all.min.mjs", "ort-wasm-simd-threaded.jsep.mjs", "ort-wasm-simd-threaded.jsep.wasm")
-DETECT = REPO / "variants" / "webassembly" / VARIANT / "detect.mjs"
 # The model doesn't ship with the page: /models/yolo11n_coco.espdl, where
 # Object detection looks for it, is a note of where to fetch it on first use,
 # with its size and SHA-256. These are the ONNX YOLO11n's, exported at a
@@ -193,15 +197,22 @@ def main():
     out.mkdir(parents=True)
     for name in RUNTIME + ("micropython.wasm.provenance",):
         shutil.copyfile(BUILD / name, out / name)
-    shutil.copyfile(PAGE, out / "index.html")
-    shutil.copyfile(DETECT, out / "detect.mjs")
+    for name in PAGE_FILES:
+        shutil.copyfile(PAGE / name, out / name)
+    # A new runtime is a new service worker, so a browser that has the page
+    # installed picks the new build up.
+    build_id = hashlib.sha256((out / "micropython.wasm").read_bytes()
+                              + (out / "micropython.mjs").read_bytes()
+                              + b"".join((PAGE / name).read_bytes() for name in PAGE_FILES)).hexdigest()[:16]
+    sw = out / "sw.js"
+    sw.write_text(sw.read_text().replace("__BUILD__", build_id))
     ort_version = fetch_ort(out, work)
     # In a container the checkout may belong to another user, and git won't
     # read it; CI says its commit in GITHUB_SHA.
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
-              "variant": VARIANT, "modules": MODULES,
+              "variant": VARIANT, "modules": MODULES, "build": build_id,
               "onnxruntime-web": ort_version, "detect_model": args.detect_model_url,
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}
     (out / "allapps.json").write_text(json.dumps(record, indent=1) + "\n")
