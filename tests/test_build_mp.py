@@ -1147,9 +1147,10 @@ class Esp32KeepFs(unittest.TestCase):
         # each grown by autosize but the DEV-KIT's, and the Touch-LCD-4B's grown
         # 256 KB more for esp_cam_sensor 2.7.0's JX-H63P.
         # The P4 cells have since grown to a 9 MB slot for tflite and vision, then to
-        # 9,344 KB for MicroPython at v1.30.0-preview-322 with esp_hosted 2.13.1.
-        shipped = {"mp-p4-devkit": 0x920000, "mp-p4-panel": 0x920000, "mp-s3-lcd7": 0x540000,
-                   "mp-s3-lcd43": 0x540000, "mp-p4-eye": 0x920000}
+        # 9,344 KB for MicroPython at v1.30.0-preview-322 with esp_hosted 2.13.1,
+        # then to 9,920 KB for the full module list (picotts and pdwidgets added).
+        shipped = {"mp-p4-devkit": 0x9b0000, "mp-p4-panel": 0x9b0000, "mp-s3-lcd7": 0x540000,
+                   "mp-s3-lcd43": 0x540000, "mp-p4-eye": 0x9b0000}
         for c in rf.CELLS:
             if c["interpreter"] != "micropython" or c["kind"] != "esp32" or "fs" not in c:
                 continue  # a cell with no fs autosizes its filesystem: nothing is kept
@@ -1689,12 +1690,14 @@ class Coredump(unittest.TestCase):
             return self._names
 
     def fragment(self, c, coredump):
-        _, module_dirs, _ = build_mp.resolve_modules(c["modules"], self.CellLibrary(c["modules"]))
+        # LVGL needs its checkout, which a unit test doesn't fetch, and sets no sdkconfig.
+        spec = ",".join(n for n in c["modules"].split(",") if n != build_mp.LVGL_MODULE)
+        _, module_dirs, _ = build_mp.resolve_modules(spec, self.CellLibrary(spec))
         text, _ = build_mp.esp32_fragment(c["chip"], module_dirs, c["board"], c["variant"], c["flash"], None, coredump)
         return text
 
-    def test_the_release_cells_cover_both_chips(self):
-        self.assertEqual({c["chip"] for c in self.cells}, {"esp32s3", "esp32p4"})
+    def test_the_release_cells_cover_every_chip(self):
+        self.assertEqual({c["chip"] for c in self.cells}, {"esp32", "esp32s3", "esp32p4", "esp32c5", "esp32s31"})
 
     def test_standard_builds_have_no_coredump(self):
         for c in self.cells:
