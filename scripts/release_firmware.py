@@ -372,10 +372,11 @@ def matrix(pico2, only=()):
 
 # ---- build -----------------------------------------------------------------
 
-def micropython_version():
+def micropython_version(tree="micropython"):
     """The checkout's own version, vX.Y.Z with -preview while upstream says so.
-    It names the set's files; the image's own sys.version tag is checked apart."""
-    h = (REPO / "micropython" / "py" / "mpconfig.h").read_text()
+    It names the set's files; the image's own sys.version tag is checked apart.
+    The ESP32-S31 cells build from their own tree, micropython-s31."""
+    h = (REPO / tree / "py" / "mpconfig.h").read_text()
     nums = [re.search(rf"define MICROPY_VERSION_{k} (\d+)", h).group(1) for k in ("MAJOR", "MINOR", "MICRO")]
     pre = int(re.search(r"define MICROPY_VERSION_PRERELEASE (\d+)", h).group(1))
     return "v" + ".".join(nums) + ("-preview" if pre else "")
@@ -489,7 +490,7 @@ def build(cell_id, out):
         meta["frozen_libraries"] = record["frozen_libraries"]
     meta["files"] = files
     meta["build_seconds"] = seconds
-    meta["interpreter_version"] = (micropython_version() if c["interpreter"] == "micropython"
+    meta["interpreter_version"] = (micropython_version("micropython-s31" if c.get("deps") == "idf6" else "micropython") if c["interpreter"] == "micropython"
                                    else record.get("circuitpython_version"))
     meta["module_revisions"] = {n: m for n, m in sorted((record.get("module_revisions") or {}).items())}
     if c["interpreter"] == "circuitpython":
