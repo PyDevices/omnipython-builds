@@ -84,6 +84,9 @@ jobs:
       - name: Its timers
         run: node variants/webassembly/tests/timers.mjs builds/webassembly/omnipython
 
+      - name: Its os.dupterm
+        run: node variants/webassembly/tests/dupterm.mjs builds/webassembly/omnipython
+
       - uses: actions/upload-artifact@v7
         with:
           name: wasm-runtime
