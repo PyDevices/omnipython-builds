@@ -17,6 +17,7 @@ for boards, desktops and the browser. One command, [`build.py`](https://github.c
 - [Fit firmware on a small flash](guides/fit-firmware-on-a-small-flash.md)
 - [Run your own packages from ROMFS](guides/run-packages-from-romfs.md)
 - [Build with a few instruments and effects](guides/build-with-a-few-instruments.md)
+- [Build the all-apps browser page](guides/build-the-all-apps-page.md)
 - [Build in a codespace](guides/build-in-a-codespace.md)
 - [Build on Windows](guides/build-on-windows.md)
 - [Build for CircuitPython](guides/build-for-circuitpython.md)

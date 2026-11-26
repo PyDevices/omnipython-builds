@@ -438,15 +438,24 @@ def library_checkout(ws):
 class Library:
     """The library tree, assembled the first time a build asks for it."""
 
-    def __init__(self, ws, siblings=False):
+    def __init__(self, ws, siblings=False, checkout=None, sources=()):
         self.ws = ws
         self.siblings = siblings
+        # --library-checkout and --library-source: a build of other refs than
+        # the pins, such as the all-apps browser build of an apps commit.
+        self.checkout = checkout
+        self.sources = list(sources)
         self.source = None
         self.tree = None
 
     def build(self):
         if self.tree is None:
-            self.source = library_checkout(self.ws)
+            if self.checkout:
+                self.source = Path(self.checkout).expanduser().resolve()
+                if not (self.source / "tools" / "libbuild.py").is_file():
+                    die(f"--library-checkout: {self.source} has no tools/libbuild.py; it isn't an {LIBRARY} checkout")
+            else:
+                self.source = library_checkout(self.ws)
             out = DEPS / LIBRARY
             DEPS.mkdir(exist_ok=True)
             say(f"assembling the {LIBRARY} tree from {self.source.resolve()}")
@@ -454,6 +463,12 @@ class Library:
             for name, sibling in self.sibling_sources():
                 say(f"  {name} from the sibling checkout {sibling}, not its pinned tag")
                 sources += ["--source", f"{name}={sibling}"]
+            for item in self.sources:
+                name, _, path = item.partition("=")
+                if not name or not path:
+                    die(f"--library-source takes NAME=PATH, not {item!r}")
+                say(f"  {name} from {path}, not its pinned tag")
+                sources += ["--source", f"{name}={Path(path).expanduser().resolve()}"]
             r = subprocess.run(
                 [sys.executable, str(self.source / "tools" / "libbuild.py"), "build", "--tree-only",
                  "--root", str(self.source), "--out", str(out), "--cache", str(DEPS / f"{LIBRARY}-sources"),
@@ -2230,7 +2245,7 @@ def build_circuitpython(args, make_extra, ws):
             die("--modules: not given, and there is no terminal to ask on")
         say("Modules: " + ", ".join(module_choices()))
         spec = input('Which (comma list; full paths for others; empty for none)? ').strip()
-    library = Library(ws, args.library_siblings)
+    library = Library(ws, args.library_siblings, args.library_checkout, args.library_source)
     spec, module_dirs, library_packages = resolve_modules(spec, library, "circuitpython", lambda: lvgl_checkout(ws))
     if library_packages or any(LIBRARY in (d.resolve() / "manifest.py").read_text()
                                for d in module_dirs if cp_frozen_manifest_dir(d)):
@@ -2381,6 +2396,12 @@ def main():
                     help="in a workspace, freeze the omnipython-lib packages that come from other repositories "
                     "(audioinstruments, audioeffects, pygraphics...) from their sibling checkouts, whatever commit "
                     "those are on, instead of the tags lib-lock.json pins")
+    ap.add_argument("--library-checkout", metavar="PATH",
+                    help="build the omnipython-lib tree from this checkout of the omnipython repository, "
+                    "whatever commit it is on, instead of the one DEPENDENCIES.lock pins")
+    ap.add_argument("--library-source", action="append", default=[], metavar="NAME=PATH",
+                    help="freeze a package the library pins from another repository (applibs, audioinstruments...) "
+                    "from this checkout instead of its lib-lock.json tag; repeat for more")
     args, make_extra = ap.parse_known_args()
     if args.coredump and args.interpreter != "micropython":
         die("--coredump is for MicroPython on esp32")
@@ -2471,7 +2492,7 @@ def main():
             die("--modules: not given, and there is no terminal to ask on")
         say("Modules: " + ", ".join(module_choices()))
         spec = input('Which (comma list; full paths for others; "all"; empty for none)? ').strip()
-    library = Library(ws, args.library_siblings)
+    library = Library(ws, args.library_siblings, args.library_checkout, args.library_source)
     spec, module_dirs, library_packages = resolve_modules(spec, library, "micropython", lambda: lvgl_checkout(ws))
     lvgl_root = lvgl_in(module_dirs)
     if library_packages or uses_library(module_dirs, frozen_manifest(port, board, variant)):

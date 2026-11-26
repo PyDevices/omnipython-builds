@@ -1,0 +1,66 @@
+# The all-apps browser page: Home and every app of the apps repository frozen
+# into one WebAssembly runtime (scripts/build_wasm_allapps.py,
+# docs/guides/build-the-all-apps-page.md). Run it by hand with the refs to
+# build; it builds, checks the runtime starts and imports what Home needs, and
+# uploads the page as the allapps-page artifact. It publishes nothing.
+name: All-apps browser page
+
+on:
+  workflow_dispatch:
+    inputs:
+      apps_ref:
+        description: PyDevices/apps branch, tag or commit
+        default: main
+      omnipython_ref:
+        description: PyDevices/omnipython branch, tag or commit
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-allapps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # The webassembly port's dev container, as the WebAssembly runtime
+      # workflow builds in: install.sh's packages, and emsdk fetched at its pin.
+      - name: Build the page in the webassembly dev container
+        uses: devcontainers/ci@v0.3
+        env:
+          APPS_REF: ${{ inputs.apps_ref }}
+          OMNIPYTHON_REF: ${{ inputs.omnipython_ref }}
+        with:
+          configFile: .devcontainer/webassembly/devcontainer.json
+          push: never
+          env: |
+            APPS_REF
+            OMNIPYTHON_REF
+          runCmd: |
+            set -e
+            ./scripts/build_wasm_allapps.py --apps-ref "$APPS_REF" --omnipython-ref "$OMNIPYTHON_REF" --out builds/allapps-page
+
+      - name: It starts and imports what Home needs
+        run: |
+          cat > /tmp/check.py <<'EOF'
+          import os, sys
+          print(sys.implementation)
+          for name in ("appkit", "touchkit", "deskkit", "vtterm", "frozen_apps", "frozen_apps.home"):
+              __import__(name)
+              print("imports", name)
+          assert hasattr(os, "dupterm"), "no os.dupterm"
+          EOF
+          node builds/allapps-page/micropython.mjs /tmp/check.py
+          cat builds/allapps-page/allapps.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: allapps-page
+          path: builds/allapps-page
+          if-no-files-found: error

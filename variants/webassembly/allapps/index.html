@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OmniPython apps</title>
+<meta name="description" content="Home and every app, frozen into one MicroPython build that runs in the browser.">
+<style>
+  html, body { height: 100%; margin: 0; background: #111; color: #ddd; font: 16px system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas { display: block; width: min(100vw, calc(100vh * 800 / 480)); aspect-ratio: 800 / 480; touch-action: none; outline: none; }
+  #status { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 16px; background: #222; font-size: 14px; }
+  #status[hidden] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="display_canvas" width="800" height="480" tabindex="0"></canvas>
+<div id="status">Loading...</div>
+<script type="module">
+// Everything Home and its apps import is frozen into micropython.wasm, so the
+// page fetches nothing but these two files. Query parameters: ?width= and
+// ?height= size the screen (800x480 by default); ?app= starts in an app, as
+// a restart into one does.
+const $ = (id) => document.getElementById(id);
+const state = { phase: "loading", log: [] };
+window.__allapps = state;
+const params = new URLSearchParams(location.search);
+const width = parseInt(params.get("width") || "800", 10);
+const height = parseInt(params.get("height") || "480", 10);
+const canvas = $("display_canvas");
+canvas.width = width;
+canvas.height = height;
+canvas.style.aspectRatio = `${width} / ${height}`;
+canvas.style.width = `min(100vw, calc(100vh * ${width} / ${height}))`;
+canvas.focus();
+const log = (line) => { state.log.push(line); console.log(line); };
+// Web Audio starts only after a gesture: the first tap or key unlocks it.
+const unlock = () => {
+  globalThis.Module?.omnipythonBridge?.enableAudio(false)?.then(() => {
+    removeEventListener("pointerdown", unlock);
+    removeEventListener("keydown", unlock);
+  }).catch(() => {});
+};
+addEventListener("pointerdown", unlock);
+addEventListener("keydown", unlock);
+async function boot() {
+  const { loadMicroPython } = await import("./micropython.mjs");
+  const mp = await loadMicroPython({ heapsize: 64 * 1024 * 1024, pystack: 16 * 1024, stdout: log, stderr: log, linebuffer: true });
+  window.mp = mp;
+  state.phase = "booting";
+  $("status").hidden = true;
+  // What Home's main.py does on a board, starting with a script app Home
+  // restarted into: it runs on its own timers, and Home comes back when it quits.
+  await mp.runPythonAsync(`
+import os, sys
+os.chdir("/")
+from boarddev import env_set
+env_set("OMNIPYTHON_WIDTH", ${width})
+env_set("OMNIPYTHON_HEIGHT", ${height})
+env_set("OMNIPYTHON_SCALE", 1)
+env_set("OMNIPYTHON_TZ_OFFSET_MIN", ${JSON.stringify(String(new Date().getTimezoneOffset()))})
+import appkit
+script = appkit.run_pending_script()
+`);
+  if (mp.globals.get("script")) {
+    state.phase = "script";
+    return;
+  }
+  await mp.runPythonAsync(`
+from display_driver import app
+from touchkit import shell
+shell.quiet_app_timers(app)
+launcher = shell.TouchLauncher(app, home="home")
+launcher.scan("apps")
+launcher.shell = shell.TouchShell(launcher)
+shell.launcher = launcher
+launcher.boot("home")
+`);
+  state.phase = "running";
+  // Returns when an app ends the main loop: REPL does, so the REPL can run.
+  await mp.runPythonAsync("appkit.serve()");
+  state.phase = "served";
+}
+boot().catch((error) => {
+  state.phase = "failed";
+  state.error = String(error && (error.stack || error));
+  $("status").hidden = false;
+  $("status").textContent = "Stopped: " + error;
+  console.error(error);
+});
+</script>
+</body>
+</html>

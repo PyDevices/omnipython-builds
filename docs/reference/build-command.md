@@ -4,6 +4,7 @@
 ./build.py [--interpreter {micropython,circuitpython}] [--port PORT]
               [--board BOARD] [--variant VARIANT] [--modules MODULES]
               [--flash FLASH] [--no-autosize] [--keep-fs SIZE] [--coredump] [--clean]
+              [--library-checkout PATH] [--library-source NAME=PATH]
               [make arguments]
 ```
 
@@ -25,6 +26,8 @@ optional. Leave out `--modules` and it lists [`modules/`](https://github.com/PyD
 | `--keep-fs` | esp32 and rp2: build beside the filesystem a board already has, its size in bytes or KB (`576K`), and stop instead of moving it. See [Keep a board's files through an update](../guides/fit-firmware-on-a-small-flash.md#keep-a-boards-files-through-an-update). |
 | `--coredump` | esp32: a troubleshooting build that writes a core dump to flash on a crash. Standard builds don't. |
 | `--clean` | Delete this target's build directory first. |
+| `--library-checkout` | Build the library of Python-only packages from this checkout of the omnipython repository, at whatever commit it's on, instead of the pinned one. |
+| `--library-source` | `NAME=PATH`: freeze a package the library takes from another repository (`applibs`, `audioinstruments`...) from this checkout instead of its pinned tag. Repeat it for more. |
 
 Arguments it doesn't recognise go to make, such as `-j4` or `V=1`. On a
 CircuitPython build they are part of the build record.
