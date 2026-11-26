@@ -87,6 +87,9 @@ jobs:
       - name: Its os.dupterm
         run: node variants/webassembly/tests/dupterm.mjs builds/webassembly/omnipython
 
+      - name: Its speaker and microphone routing
+        run: node variants/webassembly/tests/audio_route.mjs builds/webassembly/omnipython
+
       - uses: actions/upload-artifact@v7
         with:
           name: wasm-runtime
