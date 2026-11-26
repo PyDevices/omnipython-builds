@@ -41,6 +41,7 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 | `micropython.mjs`, `micropython.wasm` | The runtime, 0.3 MB and 11.2 MB (4.9 MB gzipped). |
 | `micropython.wasm.provenance` | Its size, hash, patch series and the commit of every source. |
 | `allapps.json` | The apps and omnipython commits it was built from. |
+| `detect.mjs`, `ort/` | Object detection: the page side of its `espdl`, and ONNX Runtime Web 1.31.1, which runs the model. |
 
 The page takes `?width=` and `?height=` to size the screen, and `?app=clock`
 to start in an app, as a restart into one does.
@@ -100,6 +101,33 @@ inline assembler can't be compiled
 for this port, so it's left out, and the build says which: castdisplay goes
 in without `castfast.py`, which it only imports where it's there.
 
+## Object detection
+
+The Detect app runs in the page as it does on a board: `espdl` and `image`
+are frozen into the page as small Python modules over `detect.mjs`, which
+runs YOLO11n with [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/)
+on WebGPU, or WebGL, or the CPU, whichever works first. ONNX Runtime Web is
+in the page's `ort/` folder, taken from its npm package at the version
+`DEPENDENCIES.lock` pins, so nothing of it comes from elsewhere.
+
+The model is the one thing the page fetches. The page's
+`/models/yolo11n_coco.espdl`, where the app looks for its model, is a short
+note of where the ONNX model is, its size and its SHA-256. The first time
+the app opens, the page downloads it, with a bar along the top saying so,
+and the browser keeps it, so later opens don't download it again. The note
+names https://omnipython.org/models/yolo11n_coco_320.onnx unless you build
+with another address:
+
+```bash
+./scripts/build_wasm_allapps.py --apps-ref main --omnipython-ref main --out site \
+    --detect-model-url http://localhost:8001/yolo11n_coco_320.onnx
+```
+
+Wherever it is, it must be the same file (the page checks its SHA-256), and
+a server on another origin must send `Access-Control-Allow-Origin`.
+[`scripts/export_yolo11n_onnx.py`](../../scripts/export_yolo11n_onnx.py)
+makes it from Ultralytics' weights, which are AGPL-3.0.
+
 ## How it differs from the shared browser build
 
 The shared build (the omnipython variant) is what the website, the docs'
@@ -115,9 +143,12 @@ refs you choose, not from the pins, and only when someone asks for it.
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)
 workflow runs the same command by hand: open it, choose **Run workflow**,
-and give the two refs. It builds in the webassembly dev container, checks
-that the runtime starts and imports Home, and uploads the page as the
-`allapps-page` artifact. It publishes nothing. A job of your own needs the
+and give the two refs. A pull request that changes the page's build runs it
+too, on apps and omnipython `main`. It builds in the webassembly dev
+container, checks that the runtime starts and imports Home and that Object
+detection's page side works (`variants/webassembly/tests/detect.mjs`, with a
+stand-in for ONNX Runtime), and uploads the page as the `allapps-page`
+artifact. It publishes nothing. A job of your own needs the
 same: a checkout of this repository, emsdk (the dev container's `install.sh`
 packages, or any machine with git, Python 3 and a C toolchain, since the
 build fetches emsdk at its pin), and room for the build tree. Caching `deps/`

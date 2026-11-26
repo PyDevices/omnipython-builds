@@ -11,8 +11,9 @@ It fetches the apps repository and the omnipython repository at the refs you
 name (a branch, a tag or a full commit), builds the webassembly port's
 ``allapps`` variant from them with ``build_mp.py``, and writes a folder you
 can serve as it is: ``index.html``, ``micropython.mjs``, ``micropython.wasm``,
-``micropython.wasm.provenance`` and ``allapps.json``, which records the
-commits that went in. ``--apps`` and ``--omnipython`` take local checkouts
+``micropython.wasm.provenance``, ``allapps.json``, which records the
+commits that went in, and ``detect.mjs`` with ONNX Runtime Web in ``ort/``,
+which run Object detection. ``--apps`` and ``--omnipython`` take local checkouts
 instead of refs, to try a change before it's pushed.
 
 Serve the folder with any static server, for instance
@@ -21,11 +22,16 @@ docs/guides/build-the-all-apps-page.md has the rest.
 """
 
 import argparse
+import base64
+import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -37,6 +43,23 @@ BUILD = REPO / "builds" / "webassembly" / VARIANT
 # out, as the shared browser build has.
 MODULES = "all,pdwidgets"
 RUNTIME = ("micropython.mjs", "micropython.wasm")
+# Object detection: the page's espdl runs YOLO11n with ONNX Runtime Web, which
+# ships in the page's ort/ folder at the version DEPENDENCIES.lock pins; these
+# are the files of its npm package that run it on WebGPU, WebGL and the CPU.
+# The npm registry's SHA-512 of that package, checked before anything is used.
+ORT = "onnxruntime-web"
+ORT_SHA512 = "5GeH+bWQ+HxM10z7erGlsWqryrwMbSvm/1tkIsKTT48g0fI19VXVVC435t4t7VsPdSQeS7NmuZPXrQ73k82URw=="
+ORT_FILES = ("ort.all.min.mjs", "ort-wasm-simd-threaded.jsep.mjs", "ort-wasm-simd-threaded.jsep.wasm")
+DETECT = REPO / "variants" / "webassembly" / VARIANT / "detect.mjs"
+# The model doesn't ship with the page: /models/yolo11n_coco.espdl, where
+# Object detection looks for it, is a note of where to fetch it on first use,
+# with its size and SHA-256. These are the ONNX YOLO11n's, exported at a
+# 320 x 320 input by scripts/export_yolo11n_onnx.py (Ultralytics 8.4.219).
+DETECT_MODEL = "yolo11n_coco.espdl"
+DETECT_URL = "https://omnipython.org/models/yolo11n_coco_320.onnx"
+DETECT_BYTES = 10615288
+DETECT_SHA256 = "fec7ab1ea72e967ac7f4a2b5cc74f6f154d6c1ff00ca597c0c9eabd06a3000ad"
+DETECT_INPUT = 320
 
 
 def say(text):
@@ -65,6 +88,51 @@ def fetch(repo, ref, dest):
     return dest
 
 
+def fetch_ort(dest, work):
+    """ONNX Runtime Web's page files, from its pinned npm package (kept in
+    *work*), in *dest*/ort. Returns its version."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import pins
+
+    pin = pins.get(ORT, REPO)
+    cache = work / ("%s-%s.tgz" % (ORT, pin.ref))
+    if not cache.is_file():
+        say("fetching %s" % pin.url)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(pin.url, timeout=120) as r:
+            cache.write_bytes(r.read())
+    data = cache.read_bytes()
+    got = base64.b64encode(hashlib.sha512(data).digest()).decode()
+    if got != ORT_SHA512:
+        cache.unlink()
+        die("%s is not the %s %s the npm registry published (sha512 %s)" % (pin.url, ORT, pin.ref, got))
+    ort = dest / "ort"
+    ort.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(data)) as t:
+        version = json.load(t.extractfile("package/package.json"))["version"]
+        if version != pin.ref:
+            die("%s says it is %s %s, not %s" % (pin.url, ORT, version, pin.ref))
+        for name in ORT_FILES:
+            # Each carries its MIT licence notice in its first lines.
+            (ort / name).write_bytes(t.extractfile("package/dist/" + name).read())
+    return version
+
+
+def detect_note(url):
+    """The page's /models/yolo11n_coco.espdl: where Object detection fetches its model."""
+    return json.dumps({"url": url, "bytes": DETECT_BYTES, "sha256": DETECT_SHA256, "input": DETECT_INPUT,
+                       "model": "YOLO11n, COCO, ONNX"}, indent=1) + "\n"
+
+
+def page_models(dest, detect_url):
+    """The folder the page carries as /models, in *dest*, made again each time."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    (dest / DETECT_MODEL).write_text(detect_note(detect_url))
+    return dest
+
+
 def describe(checkout, ref):
     head = git("rev-parse", "HEAD", cwd=checkout)
     dirty = bool(git("status", "--porcelain", cwd=checkout))
@@ -83,6 +151,8 @@ def main():
     ap.add_argument("--work", type=Path, default=REPO / "deps" / "allapps",
                     help="where fetched checkouts go (default: deps/allapps)")
     ap.add_argument("--clean", action="store_true", help="build from scratch, not on the last build's objects")
+    ap.add_argument("--detect-model-url", default=DETECT_URL,
+                    help="where Object detection fetches its ONNX model on first use (default: %(default)s)")
     args = ap.parse_args()
 
     work = args.work.resolve()
@@ -108,7 +178,8 @@ def main():
            "--library-source", "applibs=%s" % apps_dir]
     if args.clean:
         cmd.append("--clean")
-    env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir))
+    models = page_models(work / "models" / "page", args.detect_model_url)
+    env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir), OMNIPYTHON_MODELS=str(models))
     say("building: " + " ".join(cmd))
     if subprocess.run(cmd, cwd=REPO, env=env).returncode != 0:
         die("build_mp.py failed")
@@ -123,12 +194,15 @@ def main():
     for name in RUNTIME + ("micropython.wasm.provenance",):
         shutil.copyfile(BUILD / name, out / name)
     shutil.copyfile(PAGE, out / "index.html")
+    shutil.copyfile(DETECT, out / "detect.mjs")
+    ort_version = fetch_ort(out, work)
     # In a container the checkout may belong to another user, and git won't
     # read it; CI says its commit in GITHUB_SHA.
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
               "variant": VARIANT, "modules": MODULES,
+              "onnxruntime-web": ort_version, "detect_model": args.detect_model_url,
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}
     (out / "allapps.json").write_text(json.dumps(record, indent=1) + "\n")
     wasm_mb = record["bytes"]["micropython.wasm"] / 1e6

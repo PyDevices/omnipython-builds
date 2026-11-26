@@ -33,7 +33,7 @@ LOCK = "DEPENDENCIES.lock"
 # fetches it into modules/<name>.
 MICROPYTHON = "micropython"
 # Sources a build reads that are not one module directory each.
-SOURCES = ("omnipython-lvgl", "omnipython-lib", "esp-vision")
+SOURCES = ("omnipython-lvgl", "omnipython-lib", "esp-vision", "onnxruntime-web")
 # The ESP32-S31's own pins: upstream builds it only on ESP-IDF 6, from open pull
 # requests. Kept apart so that no other build, and no cache keyed on another
 # group, can reach them.
