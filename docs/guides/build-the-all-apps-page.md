@@ -32,9 +32,10 @@ and emsdk. The fetched checkouts go in `deps/allapps/`.
 
 The first build fetches MicroPython, LVGL and the modules as any webassembly
 build does, and emsdk if `deps/` has none (see
-[Build for a board](build-for-a-board.md)). With emsdk already there, a first
-build took about 4 minutes on 4 cores; a build from scratch after that took
-2 minutes 25 seconds, and used under 400 MB of memory.
+[Build for a board](build-for-a-board.md)). Since the page carries tflite
+and Object detection's runtime, a first build in a fresh clone, with emsdk
+already there, took about 25 minutes; a build from scratch after that, with
+the compiler cache warm, took about 6 minutes on 12 cores.
 
 ## What comes out
 
