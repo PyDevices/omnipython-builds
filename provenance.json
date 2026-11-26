@@ -265,6 +265,9 @@
   },
   "0089-micropython-rp2-a-thread-with-its-stack-in-psram-can-write-flash.patch": {
    "sha256": "8cd9ddcc1e4d132bb4be8d2ca452e016bf99ce0c2034fee8adcf2f3f8f2d2f18"
+  },
+  "0090-micropython-esp32-unique-id-is-the-factory-mac-on-every-chip.patch": {
+   "sha256": "30b7fa3e21d36b43bbd4c90aaf965222f7782ce20a9893ad9a0b9a1049e5e05a"
   }
  },
  "tinyusb_patches": {

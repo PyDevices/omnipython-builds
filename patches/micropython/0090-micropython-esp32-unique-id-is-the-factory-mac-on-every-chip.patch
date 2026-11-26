@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 00:00:00 -0600
+Subject: [PATCH] esp32/modmachine: machine.unique_id() is the factory MAC on
+ every chip.
+
+machine.unique_id() read esp_efuse_mac_get_default() into a 6-byte buffer.
+On a chip with an IEEE 802.15.4 radio (ESP32-C5, C6, H2 and S31) that call
+writes an 8-byte EUI-64, the MAC with ff:fe in its middle: two bytes past
+the buffer, onto the stack. Cut to six bytes, the ID was the vendor's three
+bytes, ff:fe and one byte of the MAC, so boards from one batch shared it,
+and so did every name and key made from it. Two ESP32-S31 boards on one
+network both answered to the same mDNS host name.
+
+It now reads ESP_MAC_EFUSE_FACTORY, always six bytes: the same ID as before
+on every chip without 802.15.4, and the board's own MAC on those with it.
+
+Based-on: micropython b9620707e (v1.30.0-preview-322)
+---
+ ports/esp32/modmachine.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/ports/esp32/modmachine.c b/ports/esp32/modmachine.c
+--- a/ports/esp32/modmachine.c
++++ b/ports/esp32/modmachine.c
+@@ -345,8 +345,12 @@ MP_NORETURN static void mp_machine_reset(void) {
+ }
+ 
+ static mp_obj_t mp_machine_unique_id(void) {
++    // The 6-byte factory MAC. On a chip with an IEEE 802.15.4 radio (C5,
++    // C6, H2, S31) esp_efuse_mac_get_default() writes an 8-byte EUI-64:
++    // too long for this buffer, and cut to six bytes it reads
++    // xx:xx:xx:ff:fe:yy, the same on many boards.
+     uint8_t chipid[6];
+-    esp_efuse_mac_get_default(chipid);
++    esp_read_mac(chipid, ESP_MAC_EFUSE_FACTORY);
+     return mp_obj_new_bytes(chipid, 6);
+ }
+ 
