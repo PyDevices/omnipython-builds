@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 # tflite: TensorFlow Lite Micro inference, esp-vision's module compiled as it
-# is (modules/.esp-vision). C only; ESP32-P4 and ESP32-S3.
+# is (modules/.esp-vision). C only; ESP32-P4, ESP32-S3, ESP32-S31 and the
+# webassembly port.
 #
 # Model.predict() takes and returns ulab ndarrays: name ulab with it, or use
 # all (a module never brings another).

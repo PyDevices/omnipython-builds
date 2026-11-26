@@ -1,11 +1,22 @@
 # The all-apps browser page: Home and every app of the apps repository frozen
 # into one WebAssembly runtime (scripts/build_wasm_allapps.py,
 # docs/guides/build-the-all-apps-page.md). Run it by hand with the refs to
-# build; it builds, checks the runtime starts and imports what Home needs, and
-# uploads the page as the allapps-page artifact. It publishes nothing.
+# build; it builds, checks the runtime starts and imports what Home needs and
+# runs Wake word's model, and uploads the page as the allapps-page artifact. It
+# publishes nothing. A pull request that changes the page's build, its
+# variant or tflite runs it too, on apps and omnipython main.
 name: All-apps browser page
 
 on:
+  pull_request:
+    paths:
+      - 'scripts/build_wasm_allapps.py'
+      - 'variants/webassembly/allapps/**'
+      - 'variants/webassembly/tests/wakeword.mjs'
+      - 'variants/webassembly/tests/hey_jarvis.wav'
+      - 'modules/tflite/**'
+      - 'modules/.esp-tflite-micro/**'
+      - '.github/workflows/wasm-allapps.yml'
   workflow_dispatch:
     inputs:
       apps_ref:
@@ -34,8 +45,8 @@ jobs:
       - name: Build the page in the webassembly dev container
         uses: devcontainers/ci@v0.3
         env:
-          APPS_REF: ${{ inputs.apps_ref }}
-          OMNIPYTHON_REF: ${{ inputs.omnipython_ref }}
+          APPS_REF: ${{ inputs.apps_ref || 'main' }}
+          OMNIPYTHON_REF: ${{ inputs.omnipython_ref || 'main' }}
         with:
           configFile: .devcontainer/webassembly/devcontainer.json
           push: never
@@ -58,6 +69,9 @@ jobs:
           EOF
           node builds/allapps-page/micropython.mjs /tmp/check.py
           cat builds/allapps-page/allapps.json
+
+      - name: It runs Wake word's model
+        run: node variants/webassembly/tests/wakeword.mjs builds/allapps-page
 
       - uses: actions/upload-artifact@v7
         with:
