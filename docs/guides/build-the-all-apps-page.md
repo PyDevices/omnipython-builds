@@ -143,9 +143,11 @@ when every window of the page has closed. The old copy is deleted then.
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)
 workflow builds the page, checks that the runtime starts and imports Home,
-and uploads it as the `allapps-page` artifact. On `main` it then publishes
-the page to this repository's GitHub Pages site, which is
-apps.omnipython.org. It runs:
+and uploads it as the `allapps-page` artifact. On `main` it then asks the
+[apps.omnipython.org](https://github.com/PyDevices/apps.omnipython.org)
+repository to publish that artifact: its workflow downloads the page from
+this run and deploys it to its GitHub Pages site. No build output is
+committed anywhere. The workflow runs:
 
 - when the apps repository publishes a release, which sends an
   `apps-release` event naming its tag; that tag and omnipython's `main` are
@@ -154,11 +156,12 @@ apps.omnipython.org. It runs:
   Untick **publish** to build without publishing; a run from any branch but
   `main` never publishes.
 
-To put an earlier build back, run the workflow by hand with the commits that
-build was made from. Every build's `allapps.json` names them, and
-<https://apps.omnipython.org/allapps.json> names the ones live now. A branch
-name such as `main` builds whatever the branch holds today, so give commits
-or tags.
+To put an earlier build back, run apps.omnipython.org's publish workflow by
+hand with the run id of the build you want: it deploys that run's artifact
+again, for as long as GitHub keeps it (90 days). For an older build, run this
+workflow by hand with the commits it was made from; every build's
+`allapps.json` names them, and <https://apps.omnipython.org/allapps.json>
+names the ones live now.
 
 A job of your own needs the
 same: a checkout of this repository, emsdk (the dev container's `install.sh`

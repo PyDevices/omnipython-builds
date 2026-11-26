@@ -2,10 +2,11 @@
 # into one WebAssembly runtime (scripts/build_wasm_allapps.py,
 # docs/guides/build-the-all-apps-page.md). Run it by hand with the refs to
 # build; it builds, checks the runtime starts and imports what Home needs, and
-# uploads the page as the allapps-page artifact. From main it then publishes
-# the page to https://apps.omnipython.org/ (this repository's GitHub Pages
-# site), unless you untick "publish". A release of the apps repository sends
-# an apps-release event, which builds that tag and publishes it.
+# uploads the page as the allapps-page artifact. From main it then asks
+# PyDevices/apps.omnipython.org to publish that artifact at
+# https://apps.omnipython.org/, unless you untick "publish". A release of the
+# apps repository sends an apps-release event, which builds that tag and
+# publishes it.
 name: All-apps browser page
 
 on:
@@ -74,27 +75,31 @@ jobs:
           path: builds/allapps-page
           if-no-files-found: error
 
-      - name: Package the page for GitHub Pages
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'repository_dispatch' || inputs.publish)
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: builds/allapps-page
-
-  # One deployment at a time; a newer one waits rather than cancelling this.
+  # apps.omnipython.org is the GitHub Pages site of PyDevices/apps.omnipython.org,
+  # whose publish workflow takes this run's allapps-page artifact and deploys
+  # it. This job tells it which run to take.
   publish:
     needs: build
     if: github.ref == 'refs/heads/main' && (github.event_name == 'repository_dispatch' || inputs.publish)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: allapps-pages
-      cancel-in-progress: false
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 10
+    permissions: {}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Mint an installation token for the site's repository
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.PYDEVICES_APP_ID }}
+          private-key: ${{ secrets.PYDEVICES_APP_PRIVATE_KEY }}
+          owner: PyDevices
+          repositories: apps.omnipython.org
+
+      - name: Ask apps.omnipython.org to publish this run's page
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh api --method POST repos/PyDevices/apps.omnipython.org/dispatches \
+            -f event_type=allapps-built \
+            -f "client_payload[run_id]=$RUN_ID"
+          echo "asked apps.omnipython.org to publish run $RUN_ID"
