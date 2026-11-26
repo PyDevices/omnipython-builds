@@ -45,6 +45,23 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 The page takes `?width=` and `?height=` to size the screen, and `?app=clock`
 to start in an app, as a restart into one does.
 
+## Home or Watch
+
+One build boots either home screen. By default the page boots Home, the grid
+of tabs. `?home=watch` boots Watch instead, the watch face with its wheel of
+apps, as Home's `main.py` picks on a board with a round or small screen. Add
+`?round=1` for a round screen, so Watch keeps its text inside the circle:
+
+```text
+http://localhost:8000/?home=watch&round=1&width=240&height=240
+```
+
+`?home=` takes any installed app's name; one that isn't installed boots Home,
+and the log says so. Another page that loads the runtime itself does the
+same in its own boot code: set `board_config.display_drv.round = True` before
+importing `display_driver` for a round screen, and set `launcher.home` after
+`launcher.scan("apps")`.
+
 ## Serve it and look
 
 Any static server works, as long as it serves `.wasm` as
