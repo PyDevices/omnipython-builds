@@ -12,8 +12,9 @@
 # One input goes further: "draft_release" attests every file and puts them on a
 # DRAFT GitHub Release, which only people who can push to the repository can
 # see. Nothing here publishes it, makes a public tag, or touches a site: a
-# draft creates no tag until someone presses Publish, and a set built from
-# preview pins only takes a tag that starts "staged-" (release_firmware.py
+# draft creates no tag until someone presses Publish on the Release page. A set
+# built from preview pins only takes a tag that starts "staged-" and is a
+# pre-release, so once published it says what it is (release_firmware.py
 # notes). Only the draft job can write, and only on a manual run.
 #
 # Toolchains and compiler output are cached, but a release is rare, so a cold
@@ -29,7 +30,7 @@ on:
         default: ""
         type: string
       draft_release:
-        description: Attest the files and put them on a draft GitHub Release (manual runs only; never published)
+        description: Attest the files and put them on a draft GitHub Release (manual runs only; publishing it is a separate step on the Release page)
         default: false
         type: boolean
       pico2:
