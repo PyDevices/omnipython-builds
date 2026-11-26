@@ -21,6 +21,7 @@ guides/flash-a-board
 guides/fit-firmware-on-a-small-flash
 guides/run-packages-from-romfs
 guides/build-with-a-few-instruments
+guides/build-the-all-apps-page
 guides/build-in-a-codespace
 guides/build-on-windows
 guides/build-for-circuitpython

@@ -654,6 +654,39 @@ class LibrarySiblings(unittest.TestCase):
             self.assertEqual(lib.sibling_sources(), [("audioinstruments", sibling)])
 
 
+class LibraryRefs(unittest.TestCase):
+    """--library-checkout and --library-source: a library tree from other refs than the pins."""
+
+    def test_the_checkout_and_sources_reach_libbuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "omnipython"
+            (checkout / "tools").mkdir(parents=True)
+            (checkout / "tools" / "libbuild.py").write_text("")
+            apps = Path(tmp) / "apps"
+            apps.mkdir()
+            seen = []
+
+            def run(cmd, **kwargs):
+                seen.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            lib = build_mp.Library(None, False, str(checkout), ["applibs=%s" % apps])
+            with mock.patch.object(build_mp.subprocess, "run", run), \
+                    mock.patch.object(build_mp, "library_checkout", side_effect=AssertionError("the pin was fetched")):
+                lib.build()
+            cmd = seen[0]
+            self.assertEqual(cmd[1], str(checkout.resolve() / "tools" / "libbuild.py"))
+            self.assertEqual(cmd[cmd.index("--root") + 1], str(checkout.resolve()))
+            self.assertIn("applibs=%s" % apps.resolve(), cmd)
+
+    def test_a_checkout_without_libbuild_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = build_mp.Library(None, False, tmp)
+            with self.assertRaises(SystemExit) as cm:
+                lib.build()
+            self.assertIn("isn't an omnipython-lib checkout", str(cm.exception))
+
+
 class LibraryPackages(unittest.TestCase):
     """omnipython-lib: packages a build requires from the library tree, not modules/."""
 
