@@ -268,6 +268,9 @@
   },
   "0090-micropython-esp32-unique-id-is-the-factory-mac-on-every-chip.patch": {
    "sha256": "30b7fa3e21d36b43bbd4c90aaf965222f7782ce20a9893ad9a0b9a1049e5e05a"
+  },
+  "0091-micropython-webassembly-os-dupterm-fed-to-the-event-repl.patch": {
+   "sha256": "3ae94ef6aa0dae604af561fc34bb4fcdb097f59cb9f4b1f9a0d98692aaced119"
   }
  },
  "tinyusb_patches": {

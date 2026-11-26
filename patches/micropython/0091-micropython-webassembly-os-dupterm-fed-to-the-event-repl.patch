@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brad Barnett <127794626+bdbarnett@users.noreply.github.com>
+Date: Wed, 25 Nov 2026 19:46:02 -0600
+Subject: [PATCH] webassembly: os.dupterm, with the page feeding its input to 
+ the REPL.
+
+The REPL here is event-driven: the page gives it one character at a time
+with mp_js_repl_process_char, and nothing waits in mp_hal_stdin_rx_chr() as
+it does on a board. So a dupterm stream can't be read the board's way.
+
+With MICROPY_PY_OS_DUPTERM on, what the REPL prints is copied to each
+dupterm stream (mp_hal_stdout_tx_strn), and os.dupterm_notify() moves what
+the streams hold into stdin_ringbuf, stopping when it is full. Three new
+exports let the page feed that to the REPL: mp_js_stdin_pending says how
+much is waiting without running any Python, mp_js_stdin_rx_chr returns the
+next character (from the buffer, then from the streams themselves), and
+mp_js_repl_started says whether mp_js_repl_init has run. mp_js_init clears
+the dupterm slots and the buffer, so a soft reinit starts with neither.
+---
+ ports/webassembly/Makefile       |  3 ++
+ ports/webassembly/main.c         | 54 ++++++++++++++++++++++++++++++++
+ ports/webassembly/mpconfigport.h | 10 ++++++
+ ports/webassembly/mphalport.c    |  9 ++++++
+ ports/webassembly/mphalport.h    |  5 +++
+ 5 files changed, 81 insertions(+)
+
+diff --git a/ports/webassembly/Makefile b/ports/webassembly/Makefile
+index 171a978..511dae6 100644
+--- a/ports/webassembly/Makefile
++++ b/ports/webassembly/Makefile
+@@ -88,6 +88,9 @@ JSFLAGS += -s EXPORTED_FUNCTIONS="\
+ 	_mp_js_repl_init,\
+ 	_mp_js_repl_process_char,\
+ 	_mp_js_repl_process_char_async,\
++	_mp_js_repl_started,\
++	_mp_js_stdin_pending,\
++	_mp_js_stdin_rx_chr,\
+ 	_mp_hal_get_interrupt_char,\
+ 	_mp_sched_keyboard_interrupt$(EXPORTED_FUNCTIONS_EXTRA)"
+ JSFLAGS += -s EXPORTED_RUNTIME_METHODS="\
+diff --git a/ports/webassembly/main.c b/ports/webassembly/main.c
+index ec5bfce..3af9712 100644
+--- a/ports/webassembly/main.c
++++ b/ports/webassembly/main.c
+@@ -37,7 +37,9 @@
+ #include "py/mperrno.h"
+ #include "extmod/vfs.h"
+ #include "extmod/vfs_posix.h"
++#include "py/mphal.h"
+ #include "shared/runtime/pyexec.h"
++#include "extmod/misc.h"
+ 
+ #include "emscripten.h"
+ #include "lexer_dedent.h"
+@@ -51,6 +53,9 @@
+ static size_t external_call_depth = 0;
+ #endif
+ 
++// Whether mp_js_repl_init has run since mp_js_init.
++static bool repl_started = false;
++
+ // Emscripten defaults to a 64k C-stack, so our limit should be less than that.
+ #define CSTACK_SIZE (32 * 1024)
+ 
+@@ -152,6 +157,15 @@ void mp_js_init(int pystack_size, int heap_size) {
+     #endif
+ 
+     mp_init();
++    repl_started = false;
++    #if MICROPY_PY_OS_DUPTERM
++    for (size_t i = 0; i < MICROPY_PY_OS_DUPTERM; ++i) {
++        MP_STATE_VM(dupterm_objs[i]) = MP_OBJ_NULL;
++    }
++    #endif
++    #if MICROPY_PY_OS_DUPTERM_NOTIFY
++    stdin_ringbuf.iget = stdin_ringbuf.iput = 0;
++    #endif
+ 
+     #if MICROPY_VFS_POSIX
+     {
+@@ -253,9 +267,49 @@ void mp_js_do_exec_async(const char *src, size_t len, uint32_t *out) {
+ }
+ 
+ void mp_js_repl_init(void) {
++    repl_started = true;
+     pyexec_event_repl_init();
+ }
+ 
++// Whether mp_js_repl_init has run since the last mp_js_init, so a page that
++// feeds dupterm input to the REPL can start it first.
++int mp_js_repl_started(void) {
++    return repl_started;
++}
++
++// How many characters os.dupterm_notify() has left for the REPL: nonzero
++// tells the page to feed them in, with mp_js_stdin_rx_chr. It runs no
++// Python, so a page may ask after every timer callback.
++int mp_js_stdin_pending(void) {
++    #if MICROPY_PY_OS_DUPTERM_NOTIFY
++    return ringbuf_avail(&stdin_ringbuf);
++    #else
++    return 0;
++    #endif
++}
++
++// The next character a dupterm stream has for the REPL, or -1. The REPL here
++// is event-driven: nothing waits in mp_hal_stdin_rx_chr() as it does on a
++// board, so the page calls this and gives each character to
++// mp_js_repl_process_char. Once stdin_ringbuf is empty the streams
++// themselves are read, which is what a board's mp_hal_stdin_rx_chr() does.
++int mp_js_stdin_rx_chr(void) {
++    #if MICROPY_PY_OS_DUPTERM
++    #if MICROPY_PY_OS_DUPTERM_NOTIFY
++    int c = ringbuf_get(&stdin_ringbuf);
++    if (c >= 0) {
++        return c;
++    }
++    #endif
++    external_call_depth_inc();
++    int d = mp_os_dupterm_rx_chr();
++    external_call_depth_dec(MP_OBJ_NULL);
++    return d < 0 ? -1 : d;
++    #else
++    return -1;
++    #endif
++}
++
+ int mp_js_repl_process_char(int c) {
+     external_call_depth_inc();
+     int ret = pyexec_event_repl_process_char(c);
+diff --git a/ports/webassembly/mpconfigport.h b/ports/webassembly/mpconfigport.h
+index 63be05f..5bb5d6a 100644
+--- a/ports/webassembly/mpconfigport.h
++++ b/ports/webassembly/mpconfigport.h
+@@ -104,6 +104,16 @@
+ 
+ typedef long mp_off_t;
+ 
++// os.dupterm: what the REPL prints is copied to each dupterm stream, and
++// os.dupterm_notify() moves what the streams hold into stdin_ringbuf, where
++// the page takes it for the event-driven REPL (mp_js_stdin_rx_chr). What
++// doesn't fit stays in the stream, and mp_js_stdin_rx_chr reads it from there.
++#ifndef MICROPY_PY_OS_DUPTERM
++#define MICROPY_PY_OS_DUPTERM (1)
++#endif
++#define MICROPY_PY_OS_DUPTERM_NOTIFY (MICROPY_PY_OS_DUPTERM)
++#define MICROPY_PY_OS_DUPTERM_NOTIFY_STOP_WHEN_FULL (MICROPY_PY_OS_DUPTERM)
++
+ #define MICROPY_HW_BOARD_NAME "JS"
+ #define MICROPY_HW_MCU_NAME "Emscripten"
+ 
+diff --git a/ports/webassembly/mphalport.c b/ports/webassembly/mphalport.c
+index 107ff5b..43ac41d 100644
+--- a/ports/webassembly/mphalport.c
++++ b/ports/webassembly/mphalport.c
+@@ -27,6 +27,12 @@
+ #include <unistd.h>
+ #include "py/mphal.h"
+ #include "library.h"
++#include "extmod/misc.h"
++
++#if MICROPY_PY_OS_DUPTERM_NOTIFY
++static uint8_t stdin_ringbuf_array[512];
++ringbuf_t stdin_ringbuf = {stdin_ringbuf_array, sizeof(stdin_ringbuf_array), 0, 0};
++#endif
+ 
+ static void stderr_print_strn(void *env, const char *str, size_t len) {
+     (void)env;
+@@ -36,6 +42,9 @@ static void stderr_print_strn(void *env, const char *str, size_t len) {
+ const mp_print_t mp_stderr_print = {NULL, stderr_print_strn};
+ 
+ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
++    #if MICROPY_PY_OS_DUPTERM
++    mp_os_dupterm_tx_strn(str, len);
++    #endif
+     return write(1, str, len);
+ }
+ 
+diff --git a/ports/webassembly/mphalport.h b/ports/webassembly/mphalport.h
+index cd22383..45782a8 100644
+--- a/ports/webassembly/mphalport.h
++++ b/ports/webassembly/mphalport.h
+@@ -28,6 +28,11 @@
+ #include "shared/runtime/interrupt_char.h"
+ 
+ #define mp_hal_stdin_rx_chr() (0)
++
++#if MICROPY_PY_OS_DUPTERM_NOTIFY
++#include "py/ringbuf.h"
++extern ringbuf_t stdin_ringbuf;
++#endif
+ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len);
+ 
+ void mp_hal_delay_ms(mp_uint_t ms);
+-- 
+2.43.0
+

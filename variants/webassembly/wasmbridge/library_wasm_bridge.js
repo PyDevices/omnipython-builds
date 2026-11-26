@@ -376,7 +376,32 @@ mergeInto(LibraryManager.library, {
         const fired = omnipython_state.firedTimers;
         for (let i = fired.length - 1; i >= 0; i--) if (fired[i] === id) fired.splice(i, 1);
     },
-    omnipython_timer_start__deps: ['$omnipython_state', '$omnipython_drop_fired'],
+    // os.dupterm input: a stream's os.dupterm_notify() leaves characters in
+    // the port's stdin buffer, and the event-driven REPL takes them here, one
+    // at a time, from the top of the event loop, so a line typed into a
+    // dupterm stream may sleep or fetch as one typed at the page's REPL does.
+    // While another call is suspended (a program's main loop sleeping), the
+    // REPL can't run beside it: the feed tries again until that call ends.
+    $omnipython_feed_repl__deps: ['$omnipython_state'],
+    $omnipython_feed_repl: async () => {
+        const state = omnipython_state;
+        if (state.feedingRepl || !Module._mp_js_stdin_pending) return;
+        if (typeof Asyncify !== 'undefined' && Asyncify.currData) {
+            setTimeout(omnipython_feed_repl, 20);
+            return;
+        }
+        state.feedingRepl = true;
+        try {
+            if (!Module._mp_js_repl_started()) Module.ccall('mp_js_repl_init', 'null', [], []);
+            let c;
+            while ((c = Module._mp_js_stdin_rx_chr()) >= 0) {
+                await Module.ccall('mp_js_repl_process_char', 'number', ['number'], [c], {async: true});
+            }
+        } finally {
+            state.feedingRepl = false;
+        }
+    },
+    omnipython_timer_start__deps: ['$omnipython_state', '$omnipython_drop_fired', '$omnipython_feed_repl'],
     omnipython_timer_start: (id, delay, periodic) => {
         const state = omnipython_state;
         const old = state.timers.get(id); if (old) old.periodic ? clearInterval(old.handle) : clearTimeout(old.handle);
@@ -393,6 +418,9 @@ mergeInto(LibraryManager.library, {
                 state.firedTimers.push(id);
             }
             if (!periodic) state.timers.delete(id);
+            if (!state.feedingRepl && Module._mp_js_stdin_pending && Module._mp_js_stdin_pending()) {
+                setTimeout(omnipython_feed_repl, 0);
+            }
         };
         const handle = periodic ? setInterval(fire, delay) : setTimeout(fire, delay);
         state.timers.set(id, {handle, periodic});
