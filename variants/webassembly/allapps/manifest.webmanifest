@@ -1,0 +1,21 @@
+{
+  "id": "./",
+  "name": "OmniPython apps",
+  "short_name": "OmniPython",
+  "description": "Home and every OmniPython app in one MicroPython runtime, running in your browser and offline.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#111111",
+  "theme_color": "#0b2a4a",
+  "categories": ["utilities", "developer"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Home", "url": "./", "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }] },
+    { "name": "Watch", "url": "./?home=watch&round=1&width=480&height=480", "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
+  ]
+}
