@@ -140,6 +140,7 @@ fired_inside = len(fired)
 _wasm_bridge.sleep_ms(0)
 fired_after = len(fired)
 provider = det.provider
+model = getattr(det, "model", None)
 det.deinit()
 `);
 check(fetched.length === 1 && fetched[0][0] === "https://models.example/yolox_nano.onnx" && fetched[0][1] === "cors",
@@ -149,6 +150,7 @@ check(notes.some((t) => /downloading its model, YOLOX-nano \(Apache-2\.0,/.test(
 check(note.hidden === true, "the note goes once the model is in");
 check(JSON.stringify(tried) === JSON.stringify(["webgl", "wasm"]), "with no WebGPU, WebGL then the CPU are tried: " + JSON.stringify(tried));
 check(mp.globals.get("provider") === "wasm", "the detector says where it runs: " + mp.globals.get("provider"));
+check(mp.globals.get("model") === "YOLOX-nano", "the detector names its model, for the app's label: " + mp.globals.get("model"));
 
 check(mp.globals.get("fired_inside") === 0 && mp.globals.get("fired_after") === 1,
   "no timer runs inside detect(); it runs at the next sleep: " + mp.globals.get("fired_inside") + ", " + mp.globals.get("fired_after"));

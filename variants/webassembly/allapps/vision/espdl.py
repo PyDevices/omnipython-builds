@@ -92,6 +92,9 @@ def _spec(path):
 class YOLO11:
     """Object detection, the 80 COCO classes, as a board's ``YOLO11`` gives it.
 
+    The page runs YOLOX-nano, so its boxes can differ a little from a
+    board's; `model` says which model it is.
+
     Args:
         path: the page's note of where the model is
             (``/models/yolo11n_coco.espdl``).
@@ -111,6 +114,8 @@ class YOLO11:
         spec = _spec(path)
         self._score = 0.25 if score is None else float(score)
         self._nms = 0.45 if nms is None else float(nms)
+        #: The model that runs, for a label.
+        self.model = "YOLOX-nano"
         self._h = _page().open(json.dumps(spec), self._score, self._nms, int(topk))
         h = self._h
         if not _wait(lambda: str(h.state) != "loading", OPEN_MS):
