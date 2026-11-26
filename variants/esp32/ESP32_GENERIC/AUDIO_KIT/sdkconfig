@@ -27,3 +27,18 @@ CONFIG_LOG_MAXIMUM_LEVEL_ERROR=y
 # DOUT, BCLK and MCLK, so an RMII PHY can't be wired. network.LAN still drives
 # SPI Ethernet chips (W5500, DM9051, KSZ8851SNL) on the header.
 CONFIG_ETH_USE_ESP32_EMAC=n
+
+# Internal RAM for Bluetooth audio and the network at once. A classic ESP32
+# has about 180 KB of it after boot; Wi-Fi took 48 KB, Bluedroid 44 KB, the
+# audio pump 29 KB and Bluetooth Receiver's spectrum meter 38 KB, so with a
+# phone or computer streaming, a 24 KB thread stack couldn't be had (`can't
+# create thread`) and the page's sockets couldn't send (EAGAIN).
+#
+# Wi-Fi's and lwIP's buffers come from PSRAM first, as on the S3 and S31, and
+# every malloc() over 512 bytes does too (the port's threshold is 8 KB): code
+# that needs internal or DMA memory asks for it by its caps and still gets it.
+# The meter's FFT buffers (2 to 6 KB each) were the largest of those. Both
+# together leave about 55 KB free with a stream playing and Wi-Fi joined,
+# where there were 5.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
