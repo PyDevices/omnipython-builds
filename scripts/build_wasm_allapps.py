@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -38,8 +39,16 @@ PAGE = REPO / "variants" / "webassembly" / VARIANT
 PAGE_FILES = ("index.html", "manifest.webmanifest", "icon.svg", "icon-maskable.svg", "sw.js")
 BUILD = REPO / "builds" / "webassembly" / VARIANT
 # Every module of this repository ("all"), and pdwidgets, which "all" leaves
-# out, as the shared browser build has.
-MODULES = "all,pdwidgets"
+# out, as the shared browser build has; and tflite, also opt-in, for Wake
+# word.
+MODULES = "all,pdwidgets,tflite"
+# The model files the page carries in /models, where the apps look for them
+# (appkit.places): (name, path in the repository its DEPENDENCIES.lock line
+# pins). Wake word's "Hey Jarvis" is 52 KB with its manifest.
+MODELS = (
+    ("hey_jarvis.json", "micro-wake-word-models", "models/v2/hey_jarvis.json"),
+    ("hey_jarvis.tflite", "micro-wake-word-models", "models/v2/hey_jarvis.tflite"),
+)
 RUNTIME = ("micropython.mjs", "micropython.wasm")
 
 
@@ -67,6 +76,37 @@ def fetch(repo, ref, dest):
     git("fetch", "-q", "--depth", "1", ORG + repo + ".git", ref, cwd=dest)
     git("checkout", "-q", "FETCH_HEAD", cwd=dest)
     return dest
+
+
+def fetch_models(dest):
+    """The MODELS files, at their pinned commits, in *dest*, fetched once."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import pins
+
+    lock = pins.read(REPO)
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, repo, path in MODELS:
+        p = lock[repo]
+        if not p.url.startswith("https://github.com/"):
+            die("%s: %s is not a GitHub repository" % (repo, p.url))
+        url = "https://raw.githubusercontent.com/%s/%s/%s" % (p.url[len("https://github.com/"):].removesuffix(".git"),
+                                                               p.ref, path)
+        target = dest / name
+        stamp = dest / (name + ".from")
+        if target.is_file() and stamp.is_file() and stamp.read_text() == url:
+            continue
+        say("fetching %s" % url)
+        with urllib.request.urlopen(url, timeout=60) as r:
+            target.write_bytes(r.read())
+        stamp.write_text(url)
+    # Only the models go in the page, not the stamps.
+    page = dest / "page"
+    if page.exists():
+        shutil.rmtree(page)
+    page.mkdir()
+    for name, _, _ in MODELS:
+        shutil.copyfile(dest / name, page / name)
+    return page
 
 
 def describe(checkout, ref):
@@ -112,7 +152,8 @@ def main():
            "--library-source", "applibs=%s" % apps_dir]
     if args.clean:
         cmd.append("--clean")
-    env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir))
+    models = fetch_models(work / "models")
+    env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir), OMNIPYTHON_MODELS=str(models))
     say("building: " + " ".join(cmd))
     if subprocess.run(cmd, cwd=REPO, env=env).returncode != 0:
         die("build_mp.py failed")
@@ -140,7 +181,7 @@ def main():
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
-              "variant": VARIANT, "modules": MODULES, "build": build_id,
+              "variant": VARIANT, "modules": MODULES, "build": build_id, "models": sorted(n for n, _, _ in MODELS),
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}
     (out / "allapps.json").write_text(json.dumps(record, indent=1) + "\n")
     wasm_mb = record["bytes"]["micropython.wasm"] / 1e6

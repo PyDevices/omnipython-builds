@@ -1,15 +1,26 @@
 # The all-apps browser page: Home and every app of the apps repository frozen
 # into one WebAssembly runtime (scripts/build_wasm_allapps.py,
 # docs/guides/build-the-all-apps-page.md). Run it by hand with the refs to
-# build; it builds, checks the runtime starts and imports what Home needs, and
-# uploads the page as the allapps-page artifact. From main it then asks
+# build; it builds, checks the runtime starts and imports what Home needs and
+# runs Wake word's model, and uploads the page as the allapps-page artifact. From main it then asks
 # PyDevices/apps.omnipython.org to publish that artifact at
 # https://apps.omnipython.org/, unless you untick "publish". A release of the
 # apps repository sends an apps-release event, which builds that tag and
 # publishes it.
+# A pull request that changes the page's build, its variant or tflite runs it
+# too, on apps and omnipython main, and publishes nothing.
 name: All-apps browser page
 
 on:
+  pull_request:
+    paths:
+      - 'scripts/build_wasm_allapps.py'
+      - 'variants/webassembly/allapps/**'
+      - 'variants/webassembly/tests/wakeword.mjs'
+      - 'variants/webassembly/tests/hey_jarvis.wav'
+      - 'modules/tflite/**'
+      - 'modules/.esp-tflite-micro/**'
+      - '.github/workflows/wasm-allapps.yml'
   workflow_dispatch:
     inputs:
       apps_ref:
@@ -68,6 +79,9 @@ jobs:
           EOF
           node builds/allapps-page/micropython.mjs /tmp/check.py
           cat builds/allapps-page/allapps.json
+
+      - name: It runs Wake word's model
+        run: node variants/webassembly/tests/wakeword.mjs builds/allapps-page
 
       - uses: actions/upload-artifact@v7
         with:
