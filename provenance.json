@@ -265,6 +265,9 @@
   },
   "0089-micropython-rp2-a-thread-with-its-stack-in-psram-can-write-flash.patch": {
    "sha256": "8cd9ddcc1e4d132bb4be8d2ca452e016bf99ce0c2034fee8adcf2f3f8f2d2f18"
+  },
+  "0090-micropython-webassembly-os-dupterm-fed-to-the-event-repl.patch": {
+   "sha256": "3ae94ef6aa0dae604af561fc34bb4fcdb097f59cb9f4b1f9a0d98692aaced119"
   }
  },
  "tinyusb_patches": {
