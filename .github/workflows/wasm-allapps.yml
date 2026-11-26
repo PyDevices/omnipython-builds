@@ -51,7 +51,7 @@ jobs:
           cat > /tmp/check.py <<'EOF'
           import os, sys
           print(sys.implementation)
-          for name in ("appkit", "touchkit", "deskkit", "vtterm", "frozen_apps", "frozen_apps.home", "midiports.endpoints"):
+          for name in ("appkit", "touchkit", "deskkit", "vtterm", "frozen_apps", "frozen_apps.home", "frozen_apps.watch", "midiports.endpoints"):
               __import__(name)
               print("imports", name)
           assert hasattr(os, "dupterm"), "no os.dupterm"
