@@ -5,17 +5,23 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OmniPython apps</title>
 <meta name="description" content="Home and every app, frozen into one MicroPython build that runs in the browser.">
+<meta name="theme-color" content="#0b2a4a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <style>
   html, body { height: 100%; margin: 0; background: #111; color: #ddd; font: 16px system-ui, sans-serif; }
   body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
   canvas { display: block; width: min(100vw, calc(100vh * 800 / 480)); aspect-ratio: 800 / 480; touch-action: none; outline: none; }
   #status { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 16px; background: #222; font-size: 14px; }
-  #status[hidden] { display: none; }
+  #status[hidden], #update[hidden] { display: none; }
+  #update { position: fixed; top: 8px; right: 8px; padding: 8px 12px; background: #0b2a4a; color: #fff; border-radius: 6px; font-size: 14px; }
+  #update button { margin-left: 8px; font: inherit; }
 </style>
 </head>
 <body>
 <canvas id="display_canvas" width="800" height="480" tabindex="0"></canvas>
 <div id="status">Loading...</div>
+<div id="update" hidden>A new version is ready.<button type="button">Reload</button></div>
 <script type="module">
 // Everything Home and its apps import is frozen into micropython.wasm, so the
 // page fetches nothing but these two files. Query parameters: ?width= and
@@ -93,6 +99,28 @@ launcher.boot(launcher.home)
   // Returns when an app ends the main loop: REPL does, so the REPL can run.
   await mp.runPythonAsync("appkit.serve()");
   state.phase = "served";
+}
+// The service worker (sw.js) keeps the page for offline use. A new build
+// installs beside the one running; it takes over when every window of the page
+// closes, or now if you choose Reload.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").then((reg) => {
+    const offer = (worker) => {
+      $("update").hidden = false;
+      $("update").querySelector("button").onclick = () => { state.updating = true; worker.postMessage("update"); };
+    };
+    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    reg.addEventListener("updatefound", () => {
+      const worker = reg.installing;
+      worker.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) offer(worker);
+      });
+    });
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (state.updating && !reloading) { reloading = true; location.reload(); }
+    });
+  }).catch((error) => log("allapps: no service worker: " + error));
 }
 boot().catch((error) => {
   state.phase = "failed";
