@@ -26,8 +26,11 @@ mergeInto(LibraryManager.library, {
         processor: null,
         // The speaker and microphone chosen for the page (a deviceId, '' for
         // the browser's default), and the last error routing to one, once.
-        route: {out: '', in: ''},
+        route: {out: '', in: '', camera: ''},
         routeErrors: {out: null, in: null},
+        // The page's camera while a program has it open: its stream, the
+        // video element that plays it, and where opening it stands.
+        camera: null,
     },
 
     $omnipython_write_event: (ptr, event) => {
@@ -223,7 +226,7 @@ mergeInto(LibraryManager.library, {
         state.animation = requestAnimationFrame(omnipython_paint);
     },
 
-    $omnipython_export_host__deps: ['$omnipython_state', '$omnipython_release_canvas', '$omnipython_disarm_audio_unlock', '$omnipython_enable_audio', '$omnipython_route_out', '$omnipython_open_microphone'],
+    $omnipython_export_host__deps: ['$omnipython_state', '$omnipython_release_canvas', '$omnipython_disarm_audio_unlock', '$omnipython_enable_audio', '$omnipython_route_out', '$omnipython_open_microphone', '$omnipython_camera_start', '$omnipython_camera_stop'],
     $omnipython_export_host: () => {
         if (Module.omnipythonBridge) return;
         Module.omnipythonBridge = {
@@ -275,6 +278,7 @@ mergeInto(LibraryManager.library, {
                     state.audioContext = null;
                 }
                 state.audioEnabled = false;
+                omnipython_camera_stop();
             },
             enableAudio: (microphone=false) => omnipython_enable_audio(microphone),
             /*
@@ -288,6 +292,7 @@ mergeInto(LibraryManager.library, {
                 const state = omnipython_state;
                 state.route[way] = deviceId || '';
                 if (way === 'out') return omnipython_route_out();
+                if (way === 'camera') return omnipython_camera_start();
                 if (state.microphoneEnabled && state.audioContext && state.processor) {
                     return omnipython_open_microphone().catch((error) => {
                         state.routeErrors.in = "can't record from that microphone: " + (error && error.message || error);
@@ -610,6 +615,123 @@ mergeInto(LibraryManager.library, {
     omnipython_audio_clear: (input) => { const s=omnipython_state; if(input)s.inputFrames.length=0; else { for(const x of s.audioSources)x.stop(); s.audioSources.clear(); s.audioQueuedBytes=0; s.audioEnd=s.audioContext?.currentTime||0; } },
     omnipython_audio_queued__deps: ['$omnipython_state'],
     omnipython_audio_queued: (input) => input ? omnipython_state.inputFrames.reduce((n,f)=>n+(f.channels[0].length-f.offset)*f.channels.length*4,0) : omnipython_state.audioQueuedBytes,
+
+    // The camera. Opening it asks the browser (getUserMedia), which may wait
+    // on the person, so omnipython_camera_open only starts it and the
+    // program polls omnipython_camera_state: 0 opening, 1 open, -1 not
+    // allowed, -2 no such camera, -3 no camera API here, -4 another error.
+    // A camera chosen while one is open (route('camera', id)) reopens it.
+    $omnipython_camera_stop__deps: ['$omnipython_state'],
+    $omnipython_camera_stop: () => {
+        const cam = omnipython_state.camera;
+        if (!cam) return;
+        cam.token++;
+        if (cam.stream) for (const track of cam.stream.getTracks()) track.stop();
+        if (cam.video) { try { cam.video.pause(); cam.video.srcObject = null; } catch (_) {} }
+        omnipython_state.camera = null;
+    },
+    $omnipython_camera_start__deps: ['$omnipython_state'],
+    $omnipython_camera_start: async () => {
+        const cam = omnipython_state.camera;
+        if (!cam) return;
+        const token = ++cam.token;
+        const media = globalThis.navigator && navigator.mediaDevices;
+        if (!media || !media.getUserMedia || typeof document === 'undefined') { cam.status = -3; return; }
+        const id = omnipython_state.route.camera;
+        try {
+            const stream = await media.getUserMedia({video: id ? {deviceId: {exact: id}} : true, audio: false});
+            if (token !== cam.token) { for (const track of stream.getTracks()) track.stop(); return; }
+            if (cam.stream) for (const track of cam.stream.getTracks()) track.stop();
+            cam.stream = stream;
+            const video = cam.video ||= document.createElement('video');
+            video.muted = true; video.playsInline = true; video.srcObject = stream;
+            if (!video.videoWidth) await new Promise((resolve) => video.addEventListener('loadedmetadata', resolve, {once: true}));
+            await video.play();
+            if (token !== cam.token) return;
+            cam.readTime = -1;
+            cam.status = 1;
+        } catch (error) {
+            if (token !== cam.token) return;
+            const name = error && error.name;
+            cam.status = name === 'NotAllowedError' || name === 'SecurityError' ? -1
+                : name === 'NotFoundError' || name === 'OverconstrainedError' ? -2 : -4;
+            console.error('OmniPython camera:', error);
+        }
+    },
+    // A canvas the size of what's drawn, with the frame on it turned as
+    // flags say (1 flip, 2 mirror); null when no new frame has come.
+    $omnipython_camera_draw__deps: ['$omnipython_state'],
+    $omnipython_camera_draw: (w, h, flags, fresh) => {
+        const cam = omnipython_state.camera;
+        if (!cam || cam.status !== 1) return null;
+        const video = cam.video;
+        if (video.readyState < 2) return null;
+        if (fresh) {
+            if (video.currentTime === cam.readTime) return null;
+            cam.readTime = video.currentTime;
+        }
+        const canvas = cam.canvas ||= document.createElement('canvas');
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        const context = cam.context ||= canvas.getContext('2d', {willReadFrequently: true});
+        context.setTransform(flags & 2 ? -1 : 1, 0, 0, flags & 1 ? -1 : 1, flags & 2 ? w : 0, flags & 1 ? h : 0);
+        context.drawImage(video, 0, 0, w, h);
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        return {canvas, context};
+    },
+    omnipython_camera_open__deps: ['$omnipython_state', '$omnipython_camera_stop', '$omnipython_camera_start', '$omnipython_export_host'],
+    omnipython_camera_open: () => {
+        omnipython_export_host();
+        omnipython_camera_stop();
+        omnipython_state.camera = {token: 0, status: 0, stream: null, video: null, canvas: null, context: null, readTime: -1};
+        omnipython_camera_start();
+    },
+    omnipython_camera_state__deps: ['$omnipython_state'],
+    omnipython_camera_state: () => omnipython_state.camera ? omnipython_state.camera.status : -4,
+    omnipython_camera_size__deps: ['$omnipython_state'],
+    omnipython_camera_size: () => {
+        const cam = omnipython_state.camera;
+        if (!cam || cam.status !== 1) return 0;
+        return ((cam.video.videoWidth & 0xffff) << 16) | (cam.video.videoHeight & 0xffff);
+    },
+    // The next frame scaled into the w x h block at (x, y) of a picW x picH
+    // RGB565 picture at ptr, little-endian unless flags has 4 (swap). 1 when
+    // written, 0 when no new frame has come, -1 when the camera isn't open.
+    omnipython_camera_read__deps: ['$omnipython_state', '$omnipython_camera_draw'],
+    omnipython_camera_read: (ptr, len, picW, picH, x, y, w, h, flags) => {
+        const cam = omnipython_state.camera;
+        if (!cam || cam.status !== 1) return -1;
+        const drawn = omnipython_camera_draw(w, h, flags, true);
+        if (!drawn) return 0;
+        const rgba = drawn.context.getImageData(0, 0, w, h).data;
+        const swap = flags & 4;
+        for (let row = 0; row < h; row++) {
+            let out = ptr + ((y + row) * picW + x) * 2, i = row * w * 4;
+            for (let col = 0; col < w; col++, i += 4, out += 2) {
+                const value = ((rgba[i] >> 3) << 11) | ((rgba[i + 1] >> 2) << 5) | (rgba[i + 2] >> 3);
+                HEAPU8[out + (swap ? 1 : 0)] = value & 0xff;
+                HEAPU8[out + (swap ? 0 : 1)] = value >> 8;
+            }
+        }
+        return 1;
+    },
+    // The current frame at the camera's size as a JPEG in a malloc'd block,
+    // its length at lenPtr; 0 when there's no frame.
+    omnipython_camera_jpeg__deps: ['$omnipython_state', '$omnipython_camera_draw'],
+    omnipython_camera_jpeg: (quality, flags, lenPtr) => {
+        HEAPU32[lenPtr >> 2] = 0;
+        const cam = omnipython_state.camera;
+        if (!cam || cam.status !== 1) return 0;
+        const drawn = omnipython_camera_draw(cam.video.videoWidth, cam.video.videoHeight, flags, false);
+        if (!drawn) return 0;
+        const text = atob(drawn.canvas.toDataURL('image/jpeg', Math.max(1, Math.min(100, quality)) / 100).split(',')[1]);
+        const ptr = _malloc(text.length || 1);
+        for (let i = 0; i < text.length; i++) HEAPU8[ptr + i] = text.charCodeAt(i);
+        HEAPU32[lenPtr >> 2] = text.length;
+        return ptr;
+    },
+    omnipython_camera_close__deps: ['$omnipython_camera_stop'],
+    omnipython_camera_close: () => omnipython_camera_stop(),
 
     omnipython_http_get__deps: ['$Asyncify'],
     omnipython_http_get: (urlPtr, statusPtr, lenPtr, finalUrlPtr) => Asyncify.handleSleep(async (wakeUp) => {

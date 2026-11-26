@@ -65,6 +65,12 @@ extern void omnipython_audio_clear(int);
 extern int omnipython_audio_queued(int);
 extern uintptr_t omnipython_http_get(const char *, int *, size_t *, uintptr_t *);
 extern void omnipython_sleep_ms(int);
+extern void omnipython_camera_open(void);
+extern int omnipython_camera_state(void);
+extern int omnipython_camera_size(void);
+extern int omnipython_camera_read(uintptr_t, size_t, int, int, int, int, int, int, int);
+extern uintptr_t omnipython_camera_jpeg(int, int, size_t *);
+extern void omnipython_camera_close(void);
 extern void omnipython_host_reset(void);
 extern void external_call_depth_inc(void);
 // MicroPython v1.29.0 gives the decrement the object to keep rooted while
@@ -441,6 +447,71 @@ static mp_obj_t bridge_sleep_ms(mp_obj_t ms) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(bridge_sleep_ms_obj, bridge_sleep_ms);
 
+// The page's camera: open starts asking the browser, and state says when it's
+// open (1), still opening (0) or failed (below 0).
+static mp_obj_t bridge_camera_open(void) {
+    omnipython_camera_open();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(bridge_camera_open_obj, bridge_camera_open);
+
+static mp_obj_t bridge_camera_state(void) {
+    return mp_obj_new_int(omnipython_camera_state());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(bridge_camera_state_obj, bridge_camera_state);
+
+static mp_obj_t bridge_camera_size(void) {
+    int size = omnipython_camera_size();
+    mp_obj_t items[2] = {
+        mp_obj_new_int((size >> 16) & 0xffff),
+        mp_obj_new_int(size & 0xffff),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(bridge_camera_size_obj, bridge_camera_size);
+
+// camera_readinto(buf, pic_w, pic_h, x, y, w, h, flags): the next frame into
+// the w x h block at (x, y) of a pic_w x pic_h RGB565 picture. 1 when written,
+// 0 when no new frame has come.
+static mp_obj_t bridge_camera_read(size_t n_args, const mp_obj_t *args) {
+    mp_buffer_info_t buf;
+    mp_get_buffer_raise(args[0], &buf, MP_BUFFER_WRITE);
+    mp_int_t pic_w = mp_obj_get_int(args[1]), pic_h = mp_obj_get_int(args[2]);
+    mp_int_t x = mp_obj_get_int(args[3]), y = mp_obj_get_int(args[4]);
+    mp_int_t w = mp_obj_get_int(args[5]), h = mp_obj_get_int(args[6]);
+    if (pic_w <= 0 || pic_h <= 0 || w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > pic_w || y + h > pic_h) {
+        mp_raise_ValueError(MP_ERROR_TEXT("block outside the picture"));
+    }
+    if ((size_t)(pic_w * pic_h * 2) > buf.len) {
+        mp_raise_ValueError(MP_ERROR_TEXT("buffer smaller than the picture"));
+    }
+    int result = omnipython_camera_read((uintptr_t)buf.buf, buf.len, pic_w, pic_h, x, y, w, h,
+        mp_obj_get_int(args[7]));
+    if (result < 0) {
+        mp_raise_OSError(MP_ENODEV);
+    }
+    return mp_obj_new_int(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bridge_camera_read_obj, 8, 8, bridge_camera_read);
+
+static mp_obj_t bridge_camera_jpeg(mp_obj_t quality, mp_obj_t flags) {
+    size_t len = 0;
+    uintptr_t data_ptr = omnipython_camera_jpeg(mp_obj_get_int(quality), mp_obj_get_int(flags), &len);
+    if (!data_ptr) {
+        return mp_const_none;
+    }
+    mp_obj_t out = mp_obj_new_bytes((const byte *)data_ptr, len);
+    free((void *)data_ptr);
+    return out;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(bridge_camera_jpeg_obj, bridge_camera_jpeg);
+
+static mp_obj_t bridge_camera_close(void) {
+    omnipython_camera_close();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(bridge_camera_close_obj, bridge_camera_close);
+
 static const mp_rom_map_elem_t bridge_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR__wasm_bridge) },
     { MP_ROM_QSTR(MP_QSTR_register_framebuffer), MP_ROM_PTR(&bridge_display_register_obj) },
@@ -458,6 +529,12 @@ static const mp_rom_map_elem_t bridge_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_audio_queued_size), MP_ROM_PTR(&bridge_audio_queued_obj) },
     { MP_ROM_QSTR(MP_QSTR_http_get), MP_ROM_PTR(&bridge_http_get_obj) },
     { MP_ROM_QSTR(MP_QSTR_sleep_ms), MP_ROM_PTR(&bridge_sleep_ms_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_open), MP_ROM_PTR(&bridge_camera_open_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_state), MP_ROM_PTR(&bridge_camera_state_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_size), MP_ROM_PTR(&bridge_camera_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_readinto), MP_ROM_PTR(&bridge_camera_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_jpeg), MP_ROM_PTR(&bridge_camera_jpeg_obj) },
+    { MP_ROM_QSTR(MP_QSTR_camera_close), MP_ROM_PTR(&bridge_camera_close_obj) },
 };
 static MP_DEFINE_CONST_DICT(bridge_globals, bridge_globals_table);
 
