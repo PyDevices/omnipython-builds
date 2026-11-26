@@ -24,6 +24,10 @@ mergeInto(LibraryManager.library, {
         mediaStream: null,
         mediaNode: null,
         processor: null,
+        // The speaker and microphone chosen for the page (a deviceId, '' for
+        // the browser's default), and the last error routing to one, once.
+        route: {out: '', in: ''},
+        routeErrors: {out: null, in: null},
     },
 
     $omnipython_write_event: (ptr, event) => {
@@ -219,7 +223,7 @@ mergeInto(LibraryManager.library, {
         state.animation = requestAnimationFrame(omnipython_paint);
     },
 
-    $omnipython_export_host__deps: ['$omnipython_state', '$omnipython_release_canvas', '$omnipython_disarm_audio_unlock', '$omnipython_enable_audio'],
+    $omnipython_export_host__deps: ['$omnipython_state', '$omnipython_release_canvas', '$omnipython_disarm_audio_unlock', '$omnipython_enable_audio', '$omnipython_route_out', '$omnipython_open_microphone'],
     $omnipython_export_host: () => {
         if (Module.omnipythonBridge) return;
         Module.omnipythonBridge = {
@@ -273,6 +277,29 @@ mergeInto(LibraryManager.library, {
                 state.audioEnabled = false;
             },
             enableAudio: (microphone=false) => omnipython_enable_audio(microphone),
+            /*
+             * Sends the page's sound to a speaker ('out') or records from a
+             * microphone ('in'): a deviceId from enumerateDevices, or '' for
+             * the browser's default. It holds for audio not on yet, and moves
+             * what's playing or recording now. routeError(way) hands back the
+             * last failure once, or null.
+             */
+            route: (way, deviceId) => {
+                const state = omnipython_state;
+                state.route[way] = deviceId || '';
+                if (way === 'out') return omnipython_route_out();
+                if (state.microphoneEnabled && state.audioContext && state.processor) {
+                    return omnipython_open_microphone().catch((error) => {
+                        state.routeErrors.in = "can't record from that microphone: " + (error && error.message || error);
+                    });
+                }
+                return Promise.resolve();
+            },
+            routeError: (way) => {
+                const error = omnipython_state.routeErrors[way];
+                omnipython_state.routeErrors[way] = null;
+                return error;
+            },
             permissions: () => ({audio:omnipython_state.audioEnabled, microphone:omnipython_state.microphoneEnabled}),
             stats: () => ({
                 events:Array.from(omnipython_state.displays.values()).reduce((n,d)=>n+d.events.length,0),
@@ -438,17 +465,38 @@ mergeInto(LibraryManager.library, {
         return id;
     },
 
-    $omnipython_enable_audio__deps: ['$omnipython_state'],
+    // Plays the page's sound on the chosen speaker, where the browser can.
+    $omnipython_route_out__deps: ['$omnipython_state'],
+    $omnipython_route_out: async () => {
+        const state = omnipython_state;
+        const context = state.audioContext;
+        if (!context || !context.setSinkId || context.sinkId === state.route.out) return;
+        try { await context.setSinkId(state.route.out); }
+        catch (error) { state.routeErrors.out = "can't play on that speaker: " + (error && error.message || error); }
+    },
+    // Records from the chosen microphone: a new stream into the same processor.
+    $omnipython_open_microphone__deps: ['$omnipython_state'],
+    $omnipython_open_microphone: async () => {
+        const state = omnipython_state;
+        const id = state.route.in;
+        const stream = await navigator.mediaDevices.getUserMedia({audio: id ? {deviceId: {exact: id}} : true});
+        if (state.mediaNode) { try { state.mediaNode.disconnect(); } catch (_) {} }
+        if (state.mediaStream) { for (const track of state.mediaStream.getTracks()) track.stop(); }
+        state.mediaStream = stream;
+        state.mediaNode = state.audioContext.createMediaStreamSource(stream);
+        if (state.processor) state.mediaNode.connect(state.processor);
+    },
+    $omnipython_enable_audio__deps: ['$omnipython_state', '$omnipython_route_out', '$omnipython_open_microphone'],
     $omnipython_enable_audio: async (microphone=false) => {
         const state = omnipython_state;
         const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
         if (!AudioContext) throw new Error('Web Audio is unavailable');
         state.audioContext ||= new AudioContext();
+        await omnipython_route_out();
         await state.audioContext.resume();
         state.audioEnabled = state.audioContext.state === 'running';
         if (microphone) {
-            state.mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
-            state.mediaNode = state.audioContext.createMediaStreamSource(state.mediaStream);
+            await omnipython_open_microphone();
             state.processor = state.audioContext.createScriptProcessor(1024, 2, 2);
             state.processor.onaudioprocess = (event) => {
                 const channels = [];
@@ -491,8 +539,10 @@ mergeInto(LibraryManager.library, {
         state.audioUnlock = {names, handler};
         for (const name of names) document.addEventListener(name, handler, true);
     },
-    omnipython_audio_state__deps: ['$omnipython_state', '$omnipython_arm_audio_unlock'],
+    omnipython_audio_state__deps: ['$omnipython_state', '$omnipython_arm_audio_unlock', '$omnipython_export_host'],
     omnipython_audio_state: (input) => {
+        // A page with sound but no display still gets the host's controls.
+        omnipython_export_host();
         if (input) return +omnipython_state.microphoneEnabled;
         if (!omnipython_state.audioEnabled) omnipython_arm_audio_unlock();
         return +omnipython_state.audioEnabled;
