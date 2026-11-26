@@ -55,10 +55,36 @@ const unlock = () => {
 };
 addEventListener("pointerdown", unlock);
 addEventListener("keydown", unlock);
+// /data, where apps keep what they save (a ZIP code Weather was given, the
+// settings), lives in the browser's IndexedDB, so it's still there at the next
+// visit. Changes are written back every two seconds and when the page is
+// hidden. Where IndexedDB is refused (some private windows), /data lasts until
+// the page closes.
+async function keepData(FS) {
+  const sync = (load) => new Promise((resolve) => FS.syncfs(load, (error) => {
+    if (error) log("allapps: /data wasn't " + (load ? "read" : "saved") + ": " + error);
+    resolve(!error);
+  }));
+  try { FS.mkdir("/data"); } catch (error) { /* already there */ }
+  FS.mount(FS.filesystems.IDBFS, {}, "/data");
+  state.dataKept = await sync(true);
+  let saving = false;
+  const save = async () => {
+    if (saving) return;
+    saving = true;
+    await sync(false);
+    saving = false;
+    state.dataSaved = Date.now();
+  };
+  setInterval(save, 2000);
+  addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") save(); });
+  addEventListener("pagehide", save);
+}
 async function boot() {
   const { loadMicroPython } = await import("./micropython.mjs");
   const mp = await loadMicroPython({ heapsize: 64 * 1024 * 1024, pystack: 16 * 1024, stdout: log, stderr: log, linebuffer: true });
   window.mp = mp;
+  await keepData(mp.FS);
   state.phase = "booting";
   $("status").hidden = true;
   // What Home's main.py does on a board, starting with a script app Home

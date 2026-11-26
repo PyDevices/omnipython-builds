@@ -171,6 +171,21 @@ fetches the new build beside the old one. The page shows "A new version is
 ready" with a Reload button; the new build takes over when you press it, or
 when every window of the page has closed. The old copy is deleted then.
 
+## What the page keeps
+
+What apps save under `/data` stays between visits, as it does on a board:
+the ZIP code Weather was given, the settings, the apps you've hidden. The
+page keeps that folder in the browser's IndexedDB, for its own address, and
+writes changes back every two seconds and when the page is hidden. Clearing
+the site's data in the browser forgets it. Where IndexedDB is refused, as in
+some private windows, `/data` lasts until the page closes and the log says
+so.
+
+Weather opens on the forecast for where the visitor is: it looks the place up
+from the visitor's public IP address, as a board does when it joins a
+network. Hold the screen for the ZIP pad to choose another place, which is
+then kept.
+
 ## In CI
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)

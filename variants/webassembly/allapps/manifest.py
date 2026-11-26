@@ -98,9 +98,13 @@ for _name in sorted(_library):
     sys.stderr.write("allapps: %s goes in without %s (viper or assembler)\n" % (_name, ", ".join(_left)))
     package(_name, files=_files, base_path=_root, opt=3)
 # A page needs files a board's firmware leaves out: midiports freezes only
-# its board transports, and a browser reads MIDI through Web MIDI and finds
-# it in Connections through endpoints.
-_for_pages = {"midiports": ("webmidi.py", "endpoints.py", "tabs.py")}
+# its board transports, and a browser reads MIDI through Web MIDI, other
+# tabs and Web Bluetooth, and finds it in Connections through endpoints.
+# bledev's Web Bluetooth backend is a host's, so a board leaves it out too.
+_for_pages = {
+    "midiports": ("webmidi.py", "endpoints.py", "tabs.py", "webble.py"),
+    "bledev": ("webble.py",),
+}
 for _name in sorted(_for_pages):
     if _name not in _library:
         continue
