@@ -19,8 +19,8 @@ micropython       https://github.com/micropython/micropython          b9620707e3
 # is missing; in a workspace modules/<name> is a link to the sibling checkout
 # and wins. castif is not here: it lives in modules/castif, tracked in this
 # repository.
-audiodsp          https://github.com/PyDevices/audiodsp.git           692d37ec87b5149c709c81741194894ee8f12a13
-pygraphics        https://github.com/PyDevices/pygraphics.git         3454215e535e31cc08b5af450e6f8532c480b199
+audiodsp          https://github.com/PyDevices/audiodsp.git           8996e148f7d696ba5c7645a35af7d2efc3a83f44  # tag v0.6.17
+pygraphics        https://github.com/PyDevices/pygraphics.git         3d70137565bbd7e8951e5c5b6c4f2961c7e7a4c2  # tag v0.2.1
 ulab              https://github.com/v923z/micropython-ulab.git       15e999747079205b2415e71a6aa2840b8f85f9dc
 
 # omnipython-lvgl is not a module directory: it is LVGL, its generated
@@ -29,7 +29,7 @@ ulab              https://github.com/v923z/micropython-ulab.git       15e9997470
 # sibling checkout is linked there instead) and compiles the port for its
 # interpreter. Move the commit here to move every LVGL build, MicroPython's and
 # CircuitPython's.
-omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    b686c0cbff32f1f8d984b8a7c13774b7a1a4a3e0
+omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    6e94b63d87883d603eba6a8448f8b472fb610ff4  # tag v9.6.2
 
 # omnipython-lib is not a module either: it is the repository of our
 # Python-only packages (omnipython, palettes, pdwidgets, audioinstruments,
@@ -39,7 +39,7 @@ omnipython-lvgl   https://github.com/PyDevices/omnipython-lvgl.git    b686c0cbff
 # repository. The packages the library builds from other
 # repositories (audiocomponents' two) are pinned by tag in its lib-lock.json,
 # not here.
-omnipython-lib    https://github.com/PyDevices/omnipython.git          c97d8eae44c9f89a35f17fe1d6ff1f7f14f4d9dc
+omnipython-lib    https://github.com/PyDevices/omnipython.git          ccaf38235f2665d9150dca30912d50d0483ba3cd  # tag v0.8.1
 
 # esp-vision (espressif/esp-vision, Apache-2.0): the source of the tflite
 # module and, later, its image stack. modules/.esp-vision/fetch.sh puts it at
