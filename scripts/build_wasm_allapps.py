@@ -11,8 +11,8 @@ It fetches the apps repository and the omnipython repository at the refs you
 name (a branch, a tag or a full commit), builds the webassembly port's
 ``allapps`` variant from them with ``build_mp.py``, and writes a folder you
 can serve as it is: ``index.html``, ``micropython.mjs``, ``micropython.wasm``,
-``micropython.wasm.provenance`` and ``allapps.json``, which records the
-commits that went in. ``--apps`` and ``--omnipython`` take local checkouts
+``micropython.wasm.provenance``, ``allapps.json``, which records the commits
+that went in, and the web app's manifest, icons and service worker. ``--apps`` and ``--omnipython`` take local checkouts
 instead of refs, to try a change before it's pushed.
 
 Serve the folder with any static server, for instance
@@ -21,6 +21,7 @@ docs/guides/build-the-all-apps-page.md has the rest.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -32,7 +33,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 ORG = "https://github.com/PyDevices/"
 VARIANT = "allapps"
-PAGE = REPO / "variants" / "webassembly" / VARIANT / "index.html"
+PAGE = REPO / "variants" / "webassembly" / VARIANT
+# The page and what makes it an installable web app: its manifest, icons and
+# service worker, which keeps the page and its runtime for offline use.
+PAGE_FILES = ("index.html", "manifest.webmanifest", "icon.svg", "icon-maskable.svg", "sw.js")
 BUILD = REPO / "builds" / "webassembly" / VARIANT
 # Every module of this repository ("all"), and pdwidgets, which "all" leaves
 # out, as the shared browser build has; and tflite, also opt-in, for Wake
@@ -163,13 +167,21 @@ def main():
     out.mkdir(parents=True)
     for name in RUNTIME + ("micropython.wasm.provenance",):
         shutil.copyfile(BUILD / name, out / name)
-    shutil.copyfile(PAGE, out / "index.html")
+    for name in PAGE_FILES:
+        shutil.copyfile(PAGE / name, out / name)
+    # A new runtime is a new service worker, so a browser that has the page
+    # installed picks the new build up.
+    build_id = hashlib.sha256((out / "micropython.wasm").read_bytes()
+                              + (out / "micropython.mjs").read_bytes()
+                              + b"".join((PAGE / name).read_bytes() for name in PAGE_FILES)).hexdigest()[:16]
+    sw = out / "sw.js"
+    sw.write_text(sw.read_text().replace("__BUILD__", build_id))
     # In a container the checkout may belong to another user, and git won't
     # read it; CI says its commit in GITHUB_SHA.
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
-              "variant": VARIANT, "modules": MODULES, "models": sorted(n for n, _, _ in MODELS),
+              "variant": VARIANT, "modules": MODULES, "build": build_id, "models": sorted(n for n, _, _ in MODELS),
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}
     (out / "allapps.json").write_text(json.dumps(record, indent=1) + "\n")
     wasm_mb = record["bytes"]["micropython.wasm"] / 1e6

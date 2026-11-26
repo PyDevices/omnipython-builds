@@ -10,3 +10,6 @@ ifeq ($(wildcard $(OMNIPYTHON_MODELS)/.),)
 $(error allapps: OMNIPYTHON_MODELS must name the folder of model files for the page's /models (scripts/build_wasm_allapps.py sets it), not '$(OMNIPYTHON_MODELS)')
 endif
 LDFLAGS += --embed-file $(OMNIPYTHON_MODELS)@/models
+# IndexedDB behind /data, so what apps save there (Weather's ZIP code, the
+# settings) is still there at the next visit. index.html mounts it.
+JSFLAGS += -lidbfs.js
