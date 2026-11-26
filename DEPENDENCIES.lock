@@ -48,6 +48,17 @@ omnipython-lib    https://github.com/PyDevices/omnipython.git          c97d8eae4
 # modules/vision/esp-vision-patches changes py_espdl.cpp in a build-tree copy,
 # never here.
 esp-vision        https://github.com/espressif/esp-vision.git         ecda8004b95e1df275ac2a1f9cdf487d03defc63
+# esp-tflite-micro (Apache-2.0): TensorFlow Lite Micro as Espressif packages
+# it, at the commit the component registry's 1.3.7 was made from, the version
+# esp-vision pins and the esp32 builds' component manager fetches. Only the
+# webassembly build of tflite reads this line: modules/.esp-tflite-micro/fetch.sh
+# puts it at modules/.esp-tflite-micro/src.
+esp-tflite-micro  https://github.com/espressif/esp-tflite-micro.git   6dcc4ae70959f409bea6795f1cece5a273b4a7a4  # version 1.3.7
+# micro-wake-word-models (Apache-2.0, models included): ESPHome's microWakeWord
+# models. The all-apps browser page carries hey_jarvis.json and
+# hey_jarvis.tflite from models/v2 at this commit in its /models folder, for
+# Wake word (scripts/build_wasm_allapps.py).
+micro-wake-word-models https://github.com/esphome/micro-wake-word-models.git 40ff33f57f8fc6ad71a75ef085abbf742495b225
 # ONNX Runtime Web (MIT): the all-apps page's Object detection runs YOLOX-nano
 # with it. scripts/build_wasm_allapps.py takes its page files from this npm
 # package, checks the registry's SHA-512, and ships them in the page's ort/.

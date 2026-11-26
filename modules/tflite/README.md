@@ -1,6 +1,7 @@
 # tflite — TensorFlow Lite Micro inference
 
-`import tflite` runs a `.tflite` model on an ESP32-P4, ESP32-S3 or ESP32-S31: load it
+`import tflite` runs a `.tflite` model on an ESP32-P4, ESP32-S3 or ESP32-S31, or in
+a browser page: load it
 with `tflite.Model`, hand `predict()` the input, and read the output as ulab
 arrays. It is esp-vision's module, the API OpenMV's `ml` module uses, and it
 also runs streaming (stateful) models such as the microWakeWord models ESPHome
@@ -12,6 +13,11 @@ Micro to the image. Name it, and ulab, which `predict()` takes and returns:
 ```bash
 ./build.py --port esp32 --board ESP32_GENERIC_P4 --variant C6_WIFI --flash 16MB --modules ulab,tflite
 ```
+
+The webassembly port builds it the same way, with the portable TensorFlow
+Lite Micro kernels in place of the chips' esp-nn ones; the
+[all-apps page](../../docs/guides/build-the-all-apps-page.md) has it, for
+Wake word.
 
 ```python
 import tflite

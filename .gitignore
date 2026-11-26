@@ -38,6 +38,8 @@
 !/modules/vision/
 !/modules/.esp-vision/
 /modules/.esp-vision/src
+!/modules/.esp-tflite-micro/
+/modules/.esp-tflite-micro/src
 /.worktrees/
 __pycache__/
 /.micropython-build.lock

@@ -46,8 +46,16 @@ PAGE = REPO / "variants" / "webassembly" / VARIANT
 PAGE_FILES = ("index.html", "manifest.webmanifest", "icon.svg", "icon-maskable.svg", "sw.js", "detect.mjs")
 BUILD = REPO / "builds" / "webassembly" / VARIANT
 # Every module of this repository ("all"), and pdwidgets, which "all" leaves
-# out, as the shared browser build has.
-MODULES = "all,pdwidgets"
+# out, as the shared browser build has; and tflite, also opt-in, for Wake
+# word.
+MODULES = "all,pdwidgets,tflite"
+# The model files the page carries in /models, where the apps look for them
+# (appkit.places): (name, path in the repository its DEPENDENCIES.lock line
+# pins). Wake word's "Hey Jarvis" is 52 KB with its manifest.
+MODELS = (
+    ("hey_jarvis.json", "micro-wake-word-models", "models/v2/hey_jarvis.json"),
+    ("hey_jarvis.tflite", "micro-wake-word-models", "models/v2/hey_jarvis.tflite"),
+)
 RUNTIME = ("micropython.mjs", "micropython.wasm")
 # Object detection: the page's espdl runs YOLOX-nano with ONNX Runtime Web, which
 # ships in the page's ort/ folder at the version DEPENDENCIES.lock pins; these
@@ -162,13 +170,35 @@ def detect_note(size):
                        "model": "YOLOX-nano", "license": "Apache-2.0"}, indent=1) + "\n"
 
 
-def page_models(dest, size):
-    """The folder the page carries as /models, in *dest*, made again each time."""
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    (dest / DETECT_MODEL).write_text(detect_note(size))
-    return dest
+def fetch_models(dest):
+    """The MODELS files, at their pinned commits, in *dest*, fetched once."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import pins
+
+    lock = pins.read(REPO)
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, repo, path in MODELS:
+        p = lock[repo]
+        if not p.url.startswith("https://github.com/"):
+            die("%s: %s is not a GitHub repository" % (repo, p.url))
+        url = "https://raw.githubusercontent.com/%s/%s/%s" % (p.url[len("https://github.com/"):].removesuffix(".git"),
+                                                               p.ref, path)
+        target = dest / name
+        stamp = dest / (name + ".from")
+        if target.is_file() and stamp.is_file() and stamp.read_text() == url:
+            continue
+        say("fetching %s" % url)
+        with urllib.request.urlopen(url, timeout=60) as r:
+            target.write_bytes(r.read())
+        stamp.write_text(url)
+    # Only the models go in the page, not the stamps.
+    page = dest / "page"
+    if page.exists():
+        shutil.rmtree(page)
+    page.mkdir()
+    for name, _, _ in MODELS:
+        shutil.copyfile(dest / name, page / name)
+    return page
 
 
 def describe(checkout, ref):
@@ -214,8 +244,9 @@ def main():
            "--library-source", "applibs=%s" % apps_dir]
     if args.clean:
         cmd.append("--clean")
+    models = fetch_models(work / "models")
     model, licence, model_pin = fetch_model(work)
-    models = page_models(work / "models" / "page", len(model))
+    (models / DETECT_MODEL).write_text(detect_note(len(model)))
     env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir), OMNIPYTHON_MODELS=str(models))
     say("building: " + " ".join(cmd))
     if subprocess.run(cmd, cwd=REPO, env=env).returncode != 0:
@@ -248,7 +279,7 @@ def main():
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
-              "variant": VARIANT, "modules": MODULES, "build": build_id,
+              "variant": VARIANT, "modules": MODULES, "build": build_id, "models": sorted(n for n, _, _ in MODELS),
               "onnxruntime-web": ort_version,
               "detect_model": {"url": model_pin.url, "release": model_pin.ref, "sha256": DETECT_SHA256},
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}

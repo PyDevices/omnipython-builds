@@ -32,6 +32,14 @@ mp.runPython("import _wasm_bridge\n_wasm_bridge.audio_state(False)");
 const bridge = globalThis.Module.omnipythonBridge;
 const fail = (what) => { console.error("FAIL", what); process.exitCode = 1; };
 
+// A program that opens the microphone before the page has it is given it at
+// the next gesture: until then the microphone is on its way, and reads nothing.
+mp.runPython(`
+assert _wasm_bridge.audio_state(True) == 1, "the microphone wasn't asked for"
+assert _wasm_bridge.audio_readinto(bytearray(64), 16000, 1, 16, True, False) == 0, "an early read wasn't empty"
+`);
+if (opened.length) fail("the microphone opened before a gesture: " + opened.join(" "));
+
 if (!bridge || !bridge.route) fail("the bridge has no route()");
 else {
   await bridge.route("out", "hp");            // chosen before audio is on

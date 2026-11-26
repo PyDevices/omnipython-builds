@@ -41,7 +41,7 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 | File | What it is |
 |---|---|
 | `index.html` | The page. It boots into Home on an 800x480 screen. |
-| `micropython.mjs`, `micropython.wasm` | The runtime, 0.3 MB and 11.2 MB (4.9 MB gzipped). |
+| `micropython.mjs`, `micropython.wasm` | The runtime, 0.3 MB and 12.3 MB (5.3 MB gzipped). |
 | `micropython.wasm.provenance` | Its size, hash, patch series and the commit of every source. |
 | `allapps.json` | The apps and omnipython commits it was built from, and the build's id. |
 | `manifest.webmanifest`, `icon.svg`, `icon-maskable.svg` | What makes the page an installable web app: its name, icons and window. |
@@ -98,6 +98,13 @@ would, and freezes what those list:
 - an `upstream` package comes from micropython-lib, except `requests`: the
   variant's own Fetch-backed `requests` stands in for it.
 
+`tflite` goes in as well, which `all` leaves out, so Wake word runs its model
+in the page. The model files the apps look for in a `models` folder are in
+the page's `/models`: Wake word's "Hey Jarvis" (`hey_jarvis.json` and
+`hey_jarvis.tflite`, 52 KB), fetched at the commit `DEPENDENCIES.lock` pins
+for `micro-wake-word-models`. The page asks for the microphone at the first
+click or key press after an app opens it.
+
 Then the apps repository's own `apps/manifest.py` freezes every app as the
 package `frozen_apps`, which Home lists, and its `lib/` folders under their
 own names. Upstream's `uasyncio` shim goes in too, as it does on boards, for
@@ -135,8 +142,8 @@ live examples and workbench load: a runtime with the OmniPython stack, into
 which each page writes its own program. It's rebuilt from the pins whenever
 they change, by the WebAssembly runtime workflow.
 
-The all-apps build is that runtime plus every app and app library, 1 MB
-more, and a page that starts Home. It's built from the apps and omnipython
+The all-apps build is that runtime plus every app and app library, tflite
+and the wake word model, 2 MB more, and a page that starts Home. It's built from the apps and omnipython
 refs you choose, not from the pins, and only when someone asks for it.
 
 ## Use it from another site
@@ -184,10 +191,11 @@ then kept.
 ## In CI
 
 The [All-apps browser page](https://github.com/PyDevices/omnipython-builds/actions/workflows/wasm-allapps.yml)
-workflow builds the page, checks that the runtime starts and imports Home
-and that Object detection's page side works
+workflow builds the page, checks that the runtime starts and imports Home,
+that Object detection's page side works
 (`variants/webassembly/tests/detect.mjs`, with a stand-in for ONNX Runtime),
-and uploads it as the `allapps-page` artifact. On `main` it then asks the
+and runs Wake word's model on a spoken "Hey Jarvis"
+(`variants/webassembly/tests/wakeword.mjs`), and uploads it as the `allapps-page` artifact. On `main` it then asks the
 [apps.omnipython.org](https://github.com/PyDevices/apps.omnipython.org)
 repository to publish that artifact: its workflow downloads the page from
 this run and deploys it to its GitHub Pages site. No build output is
@@ -196,8 +204,8 @@ committed anywhere. The workflow runs:
 - when the apps repository publishes a release, which sends an
   `apps-release` event naming its tag; that tag and omnipython's `main` are
   built;
-- on a pull request that changes the page's build, its variant or its tests,
-  on apps and omnipython `main`, never publishing;
+- on a pull request that changes the page's build, its variant, its tests or
+  tflite, with apps and omnipython `main`; it never publishes;
 - by hand: open the workflow, choose **Run workflow**, and give the two refs.
   Untick **publish** to build without publishing; a run from any branch but
   `main` never publishes.

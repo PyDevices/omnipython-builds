@@ -17,6 +17,10 @@ mergeInto(LibraryManager.library, {
         audioEnabled: false,
         audioUnlock: null,
         microphoneEnabled: false,
+        // A program opened the microphone before the page had it: it's
+        // turned on at the next click or key press, or at once when audio
+        // already runs.
+        microphoneWanted: false,
         audioEnd: 0,
         audioSources: new Set(),
         audioQueuedBytes: 0,
@@ -273,6 +277,7 @@ mergeInto(LibraryManager.library, {
                 state.mediaNode = null;
                 state.mediaStream = null;
                 state.microphoneEnabled = false;
+                state.microphoneWanted = false;
                 if (state.audioContext) {
                     try { state.audioContext.close(); } catch (_) {}
                     state.audioContext = null;
@@ -535,20 +540,40 @@ mergeInto(LibraryManager.library, {
         const state = omnipython_state;
         if (state.audioUnlock || typeof document === 'undefined') return;
         const names = ['pointerdown', 'pointerup', 'keydown'];
+        const done = () => state.audioEnabled && (state.microphoneEnabled || !state.microphoneWanted);
         const handler = () => {
-            if (state.audioEnabled) { omnipython_disarm_audio_unlock(); return; }
-            omnipython_enable_audio(false).then(
-                () => { if (state.audioEnabled) omnipython_disarm_audio_unlock(); },
-                () => {});
+            if (done()) { omnipython_disarm_audio_unlock(); return; }
+            omnipython_enable_audio(state.microphoneWanted && !state.microphoneEnabled).then(
+                () => { if (done()) omnipython_disarm_audio_unlock(); },
+                () => { state.microphoneWanted = false; });
         };
         state.audioUnlock = {names, handler};
         for (const name of names) document.addEventListener(name, handler, true);
     },
-    omnipython_audio_state__deps: ['$omnipython_state', '$omnipython_arm_audio_unlock', '$omnipython_export_host'],
+    /*
+     * Opening the microphone works the same way: a program that asks for it
+     * before the page has it gets it at the next gesture (the browser asks
+     * the person first), or at once when audio already runs, and reads
+     * nothing until then, as a board's microphone does while it starts. If
+     * the browser refuses, the next read says the microphone is off.
+     */
+    $omnipython_want_microphone__deps: ['$omnipython_state', '$omnipython_arm_audio_unlock', '$omnipython_enable_audio'],
+    $omnipython_want_microphone: () => {
+        const state = omnipython_state;
+        if (state.microphoneEnabled || state.microphoneWanted) return;
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+        state.microphoneWanted = true;
+        if (state.audioEnabled) omnipython_enable_audio(true).catch(() => { state.microphoneWanted = false; });
+        else omnipython_arm_audio_unlock();
+    },
+    omnipython_audio_state__deps: ['$omnipython_state', '$omnipython_arm_audio_unlock', '$omnipython_export_host', '$omnipython_want_microphone'],
     omnipython_audio_state: (input) => {
         // A page with sound but no display still gets the host's controls.
         omnipython_export_host();
-        if (input) return +omnipython_state.microphoneEnabled;
+        if (input) {
+            omnipython_want_microphone();
+            return +(omnipython_state.microphoneEnabled || omnipython_state.microphoneWanted);
+        }
         if (!omnipython_state.audioEnabled) omnipython_arm_audio_unlock();
         return +omnipython_state.audioEnabled;
     },
@@ -596,7 +621,7 @@ mergeInto(LibraryManager.library, {
 
     omnipython_audio_read__deps: ['$omnipython_state', '$omnipython_encode_sample'],
     omnipython_audio_read: (ptr, len, rate, channels, bits, signed, bigEndian) => {
-        const state=omnipython_state; if(!state.microphoneEnabled) return -1;
+        const state=omnipython_state; if(!state.microphoneEnabled) return state.microphoneWanted ? 0 : -1;
         const width=bits>>3, capacity=Math.floor(len/(width*channels)); let written=0;
         const view=new DataView(HEAPU8.buffer,ptr,len);
         while(written<capacity && state.inputFrames.length){
