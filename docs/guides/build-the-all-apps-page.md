@@ -56,6 +56,10 @@ apps, as Home's `main.py` picks on a board with a round or small screen. Add
 http://localhost:8000/?home=watch&round=1&width=240&height=240
 ```
 
+In a browser Watch leaves out the line under its face (the date, battery,
+steps and network on a board): a page has none of the board's to show. It
+needs no parameter, since Watch knows when it runs in a page.
+
 `?home=` takes any installed app's name; one that isn't installed boots Home,
 and the log says so. Another page that loads the runtime itself does the
 same in its own boot code: set `board_config.display_drv.round = True` before
