@@ -1,8 +1,8 @@
 # The all-apps browser build: the omnipython variant's runtime (its JS hooks,
 # Asyncify and growing memory) with every app frozen in. Only the manifest
 # differs, and the page's /models folder, where the apps look for their model
-# files: Object detection's there is a note of where its model is fetched
-# from. scripts/build_wasm_allapps.py builds it, and names that folder in
+# files: Object detection's there is a note of where the page keeps its
+# model. scripts/build_wasm_allapps.py builds it, and names that folder in
 # $OMNIPYTHON_MODELS.
 include $(VARIANT_DIR)/../omnipython/mpconfigvariant.mk
 # IndexedDB behind /data, so what apps save there (Weather's ZIP code, the

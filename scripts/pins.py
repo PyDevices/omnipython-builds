@@ -33,7 +33,7 @@ LOCK = "DEPENDENCIES.lock"
 # fetches it into modules/<name>.
 MICROPYTHON = "micropython"
 # Sources a build reads that are not one module directory each.
-SOURCES = ("omnipython-lvgl", "omnipython-lib", "esp-vision", "onnxruntime-web")
+SOURCES = ("omnipython-lvgl", "omnipython-lib", "esp-vision", "onnxruntime-web", "yolox-nano")
 # The ESP32-S31's own pins: upstream builds it only on ESP-IDF 6, from open pull
 # requests. Kept apart so that no other build, and no cache keyed on another
 # group, can reach them.
@@ -43,7 +43,8 @@ TOOLCHAINS = ("esp-idf", "emsdk", "SDL2", "espressif__tinyusb", "espressif__esp_
               "circuitpython", "esp_cam_sensor", "esp_sccb_intf", "cmake_utilities", "esp_h264", "usb")
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
-ARCHIVE = re.compile(r"\.(zip|tar\.gz|tgz|tar\.xz|tar\.bz2)$")
+# A download, pinned by its version: an archive, or a model file used as it is.
+ARCHIVE = re.compile(r"\.(zip|tar\.gz|tgz|tar\.xz|tar\.bz2|onnx)$")
 
 
 class Pin(NamedTuple):

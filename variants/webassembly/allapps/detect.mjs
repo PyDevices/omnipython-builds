@@ -1,14 +1,14 @@
-// Object detection for the all-apps page: YOLO11n through ONNX Runtime Web,
-// behind the page's `espdl.YOLO11` (vision/espdl.py), so the Detect app runs
-// as it does on a board.
+// Object detection for the all-apps page: YOLOX-nano through ONNX Runtime
+// Web, behind the page's `espdl.YOLO11` (vision/espdl.py), so the Detect app
+// runs as it does on a board.
 //
 // ONNX Runtime Web ships with the page, in ./ort/, at the version
-// DEPENDENCIES.lock pins, and loads the first time a detector opens. The model
-// doesn't ship with the page: it is fetched the first time it's used, from
-// the address the page's /models/yolo11n_coco.espdl names, with a note on
-// screen while it downloads. It is the one thing the page fetches from
-// anywhere, and the browser keeps a copy (the Cache API), so it downloads
-// once.
+// DEPENDENCIES.lock pins, and loads the first time a detector opens. The
+// model, Megvii's YOLOX-nano (Apache-2.0), ships with the page too, in
+// ./models/, but it is fetched only the first time it's used, from the
+// address the page's /models/yolo11n_coco.espdl names, with a note on screen
+// while it downloads. The browser keeps a copy (the Cache API), so it
+// downloads once.
 //
 // Python polls: open() and run() return at once, and the handle's `state`,
 // `busy`, `result` and `error` say where they are. That lets the runtime
@@ -79,6 +79,9 @@ async function openCache() {
 
 /** The model's bytes: from the browser's cache, or downloaded with the note up. */
 export async function fetchModel(spec, say = note) {
+  // The page's note names the model relative to the page.
+  const base = globalThis.document?.baseURI || globalThis.location?.href;
+  if (base) spec = { ...spec, url: new URL(spec.url, base).href };
   const cache = await openCache();
   if (cache) {
     const hit = await cache.match(spec.url);
@@ -88,10 +91,11 @@ export async function fetchModel(spec, say = note) {
       await cache.delete(spec.url);
     }
   }
-  const host = new URL(spec.url, globalThis.location?.href).host || spec.url;
+  const host = base ? new URL(spec.url).host : spec.url;
   const total = spec.bytes || 0;
-  const what = `Object detection is downloading its model, YOLO11n (${total ? mb(total) + " MB" : "about 10 MB"}), ` +
-    `from ${host}: the only thing this page fetches. It's kept for next time.`;
+  const about = [spec.license, total ? mb(total) + " MB" : ""].filter(Boolean).join(", ");
+  const what = `Object detection is downloading its model, ${spec.model || "a detector"}` +
+    `${about ? " (" + about + ")" : ""}, from ${host}. It's kept for next time.`;
   say(what);
   try {
     const response = await fetch(spec.url, { mode: "cors" });
@@ -131,41 +135,44 @@ export async function fetchModel(spec, say = note) {
 }
 
 /**
- * The model input from an RGB565 (little-endian, as the page's camera writes
- * it) or grayscale picture: letterboxed into size x size, grey padding, RGB
- * planes scaled to 0..1. Returns the tensor data and how to map boxes back.
+ * YOLOX's input from an RGB565 (little-endian, as the page's camera writes
+ * it) or grayscale picture, as YOLOX's own demo makes it: scaled to fit
+ * size x size, keeping its shape, in the top left corner, the rest grey
+ * (114), as BGR planes of 0..255 with no normalisation. Returns the tensor
+ * data and the scale, to map boxes back.
  */
-export function letterbox(pixels, w, h, gray, size) {
+export function preprocess(pixels, w, h, gray, size) {
   const scale = Math.min(size / w, size / h);
-  const nw = Math.max(1, Math.round(w * scale));
-  const nh = Math.max(1, Math.round(h * scale));
-  const padX = Math.floor((size - nw) / 2);
-  const padY = Math.floor((size - nh) / 2);
+  const nw = Math.max(1, Math.floor(w * scale));
+  const nh = Math.max(1, Math.floor(h * scale));
   const plane = size * size;
-  const data = new Float32Array(3 * plane).fill(114 / 255);
+  const data = new Float32Array(3 * plane).fill(114);
   for (let y = 0; y < nh; y++) {
     const sy = Math.min(h - 1, Math.floor((y + 0.5) / scale));
-    const row = (y + padY) * size + padX;
+    const row = y * size;
     for (let x = 0; x < nw; x++) {
       const sx = Math.min(w - 1, Math.floor((x + 0.5) / scale));
       let r, g, b;
       if (gray) {
-        r = g = b = pixels[sy * w + sx] / 255;
+        r = g = b = pixels[sy * w + sx];
       } else {
         const i = (sy * w + sx) * 2;
         const p = pixels[i] | (pixels[i + 1] << 8);
-        r = ((p >> 11) & 31) / 31;
-        g = ((p >> 5) & 63) / 63;
-        b = (p & 31) / 31;
+        r = (((p >> 11) & 31) * 255 + 15) / 31 | 0;
+        g = (((p >> 5) & 63) * 255 + 31) / 63 | 0;
+        b = ((p & 31) * 255 + 15) / 31 | 0;
       }
       const o = row + x;
-      data[o] = r;
+      data[o] = b;
       data[plane + o] = g;
-      data[2 * plane + o] = b;
+      data[2 * plane + o] = r;
     }
   }
-  return { data, scale, padX, padY };
+  return { data, scale };
 }
+
+// YOLOX looks at three grids, one cell each 8, 16 and 32 pixels.
+const STRIDES = [8, 16, 32];
 
 function iou(a, b) {
   const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]);
@@ -176,30 +183,47 @@ function iou(a, b) {
 }
 
 /**
- * Boxes from YOLO11's output, [1, 4 + classes, anchors]: each anchor's
- * centre, size and class scores. Keeps those scoring at least *score*,
- * suppresses overlaps of one class above *nms*, best *topk* first, as
- * espdl's YOLO11 returns them: [x, y, w, h, score, class] in the picture's
- * pixels.
+ * Boxes from YOLOX's output, [1, anchors, 5 + classes]: for each cell of
+ * the 8, 16 and 32 pixel grids, its box as offsets from the cell (centre)
+ * and log sizes, then how likely it holds an object, then each class's
+ * score. A box scores its object score times its best class's. Keeps those
+ * scoring at least *score*, suppresses overlaps of one class above *nms*,
+ * best *topk* first, as espdl's YOLO11 returns them: [x, y, w, h, score,
+ * class] in the picture's pixels.
  */
-export function boxes(out, dims, fit, w, h, score, nms, topk) {
-  const rows = dims[1], n = dims[2], classes = rows - 4;
-  const found = [];
-  for (let i = 0; i < n; i++) {
-    let best = 0, cls = -1;
-    for (let c = 0; c < classes; c++) {
-      const s = out[(4 + c) * n + i];
-      if (s > best) { best = s; cls = c; }
-    }
-    if (best < score) continue;
-    const cx = out[i], cy = out[n + i], bw = out[2 * n + i], bh = out[3 * n + i];
-    let x0 = (cx - bw / 2 - fit.padX) / fit.scale, y0 = (cy - bh / 2 - fit.padY) / fit.scale;
-    let x1 = (cx + bw / 2 - fit.padX) / fit.scale, y1 = (cy + bh / 2 - fit.padY) / fit.scale;
-    x0 = Math.max(0, Math.min(w, x0)); x1 = Math.max(0, Math.min(w, x1));
-    y0 = Math.max(0, Math.min(h, y0)); y1 = Math.max(0, Math.min(h, y1));
-    if (x1 - x0 < 1 || y1 - y0 < 1) continue;
-    found.push([x0, y0, x1 - x0, y1 - y0, best, cls]);
+export function boxes(out, dims, fit, w, h, score, nms, topk, size) {
+  const n = dims[1], row = dims[2], classes = row - 5;
+  const grids = STRIDES.map((s) => Math.floor(size / s));
+  if (grids.reduce((t, g) => t + g * g, 0) !== n) {
+    throw new Error(`the model's output has ${n} boxes, not YOLOX's for a ${size} x ${size} input`);
   }
+  const found = [];
+  let i = 0;
+  STRIDES.forEach((stride, k) => {
+    const g = grids[k];
+    for (let gy = 0; gy < g; gy++) {
+      for (let gx = 0; gx < g; gx++, i++) {
+        const o = i * row;
+        const obj = out[o + 4];
+        if (obj < score) continue;
+        let best = 0, cls = -1;
+        for (let c = 0; c < classes; c++) {
+          const s = out[o + 5 + c];
+          if (s > best) { best = s; cls = c; }
+        }
+        best *= obj;
+        if (best < score) continue;
+        const cx = (out[o] + gx) * stride, cy = (out[o + 1] + gy) * stride;
+        const bw = Math.exp(out[o + 2]) * stride, bh = Math.exp(out[o + 3]) * stride;
+        let x0 = (cx - bw / 2) / fit.scale, y0 = (cy - bh / 2) / fit.scale;
+        let x1 = (cx + bw / 2) / fit.scale, y1 = (cy + bh / 2) / fit.scale;
+        x0 = Math.max(0, Math.min(w, x0)); x1 = Math.max(0, Math.min(w, x1));
+        y0 = Math.max(0, Math.min(h, y0)); y1 = Math.max(0, Math.min(h, y1));
+        if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+        found.push([x0, y0, x1 - x0, y1 - y0, best, cls]);
+      }
+    }
+  });
   found.sort((a, b) => b[4] - a[4]);
   const kept = [];
   for (const f of found) {
@@ -229,13 +253,14 @@ async function session(ort, bytes, size, said) {
 }
 
 /**
- * Open a detector on the model *spec* names ({url, bytes, sha256, input}).
+ * Open a detector on the model *spec* names ({url, bytes, sha256, input,
+ * model, license}).
  * Returns a handle at once: its `state` is "loading", then "ready" or
  * "failed" (with `error`).
  */
-export function open(spec, score = 0.25, nms = 0.7, topk = 10) {
+export function open(spec, score = 0.25, nms = 0.45, topk = 10) {
   if (typeof spec === "string") spec = JSON.parse(spec);
-  const size = spec.input || 640;
+  const size = spec.input || 416;
   const handle = {
     state: "loading", error: "", provider: "", from: "", busy: false, result: "[]", ms: 0,
     score, nms, topk, session: null,
@@ -244,12 +269,12 @@ export function open(spec, score = 0.25, nms = 0.7, topk = 10) {
       handle.busy = true;
       handle.error = "";
       const t0 = performance.now();
-      const fit = letterbox(pixels, w, h, !!gray, size);
+      const fit = preprocess(pixels, w, h, !!gray, size);
       const s = handle.session;
       const input = new handle.ort.Tensor("float32", fit.data, [1, 3, size, size]);
       s.run({ [s.inputNames[0]]: input }).then((outs) => {
         const out = outs[s.outputNames[0]];
-        handle.result = JSON.stringify(boxes(out.data, out.dims, fit, w, h, handle.score, handle.nms, handle.topk));
+        handle.result = JSON.stringify(boxes(out.data, out.dims, fit, w, h, handle.score, handle.nms, handle.topk, size));
         handle.ms = Math.round(performance.now() - t0);
       }, (e) => {
         handle.error = String(e && e.message ? e.message : e);
@@ -273,7 +298,7 @@ export function open(spec, score = 0.25, nms = 0.7, topk = 10) {
     handle.session = s;
     handle.provider = provider;
     handle.state = "ready";
-    console.log(`Object detection: YOLO11n on ${provider}, model from ${from === "cache" ? "this browser's cache" : spec.url}`);
+    console.log(`Object detection: ${spec.model || "the model"} on ${provider}, model from ${from === "cache" ? "this browser's cache" : spec.url}`);
   })().catch((e) => {
     handle.error = String(e && e.message ? e.message : e);
     handle.state = "failed";
@@ -282,4 +307,4 @@ export function open(spec, score = 0.25, nms = 0.7, topk = 10) {
   return handle;
 }
 
-globalThis.omnipythonDetect = { open, fetchModel, letterbox, boxes, useRuntime, PROVIDERS };
+globalThis.omnipythonDetect = { open, fetchModel, preprocess, boxes, useRuntime, PROVIDERS };

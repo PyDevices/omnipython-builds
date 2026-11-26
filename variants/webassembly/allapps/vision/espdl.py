@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""A browser page's ``espdl``: YOLO11 object detection through ONNX Runtime Web.
+"""A browser page's ``espdl``: object detection through ONNX Runtime Web.
 
 On a board ``espdl`` is the vision module's ESP-DL binding. In the all-apps
 page this module gives the same ``YOLO11`` class, so the Detect app runs
@@ -17,12 +17,14 @@ unchanged::
     det.deinit()
 
 The page's ``/models/yolo11n_coco.espdl`` isn't ESP-DL's model. It is a short
-JSON note that says where the ONNX YOLO11n is (``url``), its size
-(``bytes``), its SHA-256 (``sha256``) and the side of the square it looks at
-(``input``). The page fetches that model the first time a detector opens,
-saying so on screen, and the browser keeps it. The page's ``detect.mjs``
-runs it with ONNX Runtime Web, on WebGPU, WebGL or the CPU, whichever works
-first.
+JSON note that says where the page's ONNX model is (``url``, relative to the
+page), its size (``bytes``), its SHA-256 (``sha256``), the side of the square
+it looks at (``input``), and what it is (``model``, ``license``). The page
+carries Megvii's YOLOX-nano (Apache-2.0), which knows the same 80 COCO classes
+as the board's YOLO11n, so the boxes it finds may differ from a board's. The
+page fetches the model the first time a detector opens, saying so on screen,
+and the browser keeps it. The page's ``detect.mjs`` runs it with ONNX Runtime
+Web, on WebGPU, WebGL or the CPU, whichever works first.
 
 ESP-DL's other detectors and classifiers aren't here.
 """
@@ -88,14 +90,14 @@ def _spec(path):
 
 
 class YOLO11:
-    """YOLO11 object detection, the 80 COCO classes.
+    """Object detection, the 80 COCO classes, as a board's ``YOLO11`` gives it.
 
     Args:
         path: the page's note of where the model is
             (``/models/yolo11n_coco.espdl``).
         score: the lowest confidence kept, 0.25 when None.
         nms: the overlap above which a weaker box of the same class goes,
-            0.7 when None.
+            0.45 when None.
         topk: the most detections a frame returns.
         mean: taken for a board's preprocessing, and ignored.
         std: taken for a board's preprocessing, and ignored.
@@ -108,7 +110,7 @@ class YOLO11:
     def __init__(self, path, *, score=None, nms=None, topk=10, mean=None, std=None):
         spec = _spec(path)
         self._score = 0.25 if score is None else float(score)
-        self._nms = 0.7 if nms is None else float(nms)
+        self._nms = 0.45 if nms is None else float(nms)
         self._h = _page().open(json.dumps(spec), self._score, self._nms, int(topk))
         h = self._h
         if not _wait(lambda: str(h.state) != "loading", OPEN_MS):

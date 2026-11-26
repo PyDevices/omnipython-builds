@@ -1,13 +1,16 @@
 // Object detection in the all-apps page: the page's espdl.YOLO11 and image,
 // called as the Detect app calls them, over detect.mjs with a stand-in for
-// ONNX Runtime. It checks the model is fetched from the address the note in
-// /models names, with the note on screen and its SHA-256 checked; that the
-// picture reaches the model letterboxed; that providers fall back in order;
-// and that boxes come back in the picture's pixels, thresholded and with
-// overlaps suppressed.
+// ONNX Runtime. It checks that the page carries YOLOX-nano, the model its
+// note in /models names; that a model is fetched from the note's address,
+// with the note on screen and its SHA-256 checked; that the picture reaches
+// the model as YOLOX's demo feeds it; that providers fall back in order; and
+// that YOLOX's grid output comes back as boxes in the picture's pixels,
+// thresholded and with overlaps suppressed.
 //
 //   node variants/webassembly/tests/detect.mjs builds/allapps-page
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const dir = path.resolve(process.argv[2]);
@@ -28,7 +31,7 @@ globalThis.document = {
 };
 
 // The model, as the network serves it.
-const MODEL = new TextEncoder().encode("a stand-in for YOLO11n");
+const MODEL = new TextEncoder().encode("a stand-in for YOLOX-nano");
 const MODEL_SHA = createHash("sha256").update(MODEL).digest("hex");
 const fetched = [];
 globalThis.fetch = async (url, opts) => {
@@ -38,23 +41,31 @@ globalThis.fetch = async (url, opts) => {
 };
 
 // ONNX Runtime: WebGL refuses the model, the CPU takes it. Its output is
-// YOLO11's [1, 84, anchors] with three anchors: a person, the same person
-// again a little weaker (suppressed), and a cup under the score.
-const SIZE = 320;
+// YOLOX's for a 416 x 416 input, [1, 3549, 85]: a row for each cell of the
+// 52 x 52, 26 x 26 and 13 x 13 grids (8, 16 and 32 pixels a cell), each its
+// box as offsets from the cell and log sizes, its object score and the 80
+// class scores. Three rows say something: a person, the same person again a
+// little weaker (suppressed), and a cup whose object and class scores each
+// pass 0.15 but whose product doesn't.
+const SIZE = 416;
 const tried = [];
 const inputs = [];
 class Tensor {
   constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; }
 }
 function output() {
-  const n = 3, out = new Float32Array(84 * n);
-  const put = (i, cx, cy, w, h, cls, s) => {
-    out[i] = cx; out[n + i] = cy; out[2 * n + i] = w; out[3 * n + i] = h; out[(4 + cls) * n + i] = s;
+  const n = 52 * 52 + 26 * 26 + 13 * 13, out = new Float32Array(85 * n);
+  const put = (i, dx, dy, lw, lh, obj, cls, s) => {
+    out.set([dx, dy, lw, lh, obj], i * 85);
+    out[i * 85 + 5 + cls] = s;
   };
-  put(0, 160, 160, 160, 80, 0, 0.9);
-  put(1, 162, 160, 160, 80, 0, 0.8);
-  put(2, 40, 120, 20, 20, 41, 0.1);
-  return new Tensor("float32", out, [1, 84, n]);
+  // 52 x 52 grid, cell (26, 13): centre (208, 104), 208 x 104.
+  put(13 * 52 + 26, 0, 0, Math.log(26), Math.log(13), 0.9, 0, 1.0);
+  // 26 x 26 grid, cell (13, 6): centre (209.6, 104), 208 x 104.
+  put(52 * 52 + 6 * 26 + 13, 0.1, 0.5, Math.log(13), Math.log(6.5), 0.8, 0, 1.0);
+  // 13 x 13 grid, cell (2, 3): a cup scoring 0.3 x 0.3.
+  put(52 * 52 + 26 * 26 + 3 * 13 + 2, 0.5, 0.5, 0, 0, 0.3, 41, 0.3);
+  return new Tensor("float32", out, [1, n, 85]);
 }
 const ort = {
   Tensor,
@@ -65,11 +76,11 @@ const ort = {
       if (Buffer.compare(Buffer.from(bytes), Buffer.from(MODEL)) !== 0) throw new Error("not the downloaded model");
       if (ep === "webgl") throw new Error("WebGL can't run this model");
       return {
-        inputNames: ["images"], outputNames: ["output0"],
+        inputNames: ["images"], outputNames: ["output"],
         async run(feeds) {
           inputs.push(feeds.images);
           await new Promise((r) => setTimeout(r, 30)); // a model takes a while
-          return { output0: output() };
+          return { output: output() };
         },
         async release() {},
       };
@@ -85,21 +96,29 @@ const { loadMicroPython } = await import(path.join(dir, "micropython.mjs"));
 const mp = await loadMicroPython({ stdout: (l) => console.log(l), stderr: (l) => console.error(l) });
 const py = async (code) => { await mp.runPythonAsync(code); };
 
-// The page's own note says where the real model is.
+// The page's own note names the model it carries: YOLOX-nano, Apache-2.0,
+// in the page's own folder, with its size and SHA-256.
 await py(`
 with open("/models/yolo11n_coco.espdl") as f:
     page_note = f.read()
 `);
-const { url, sha256: sha, bytes, input } = JSON.parse(mp.globals.get("page_note"));
-check(/^https?:\/\//.test(url) && /^[0-9a-f]{64}$/.test(sha) && bytes > 1e6 && input > 0,
-  `the page's /models/yolo11n_coco.espdl names the model: ${url}, ${bytes} bytes, input ${input}`);
+const spec = JSON.parse(mp.globals.get("page_note"));
+const shipped = new URL(spec.url, globalThis.document.baseURI);
+const file = shipped.protocol === "file:" ? fileURLToPath(shipped) : "";
+const body = file && existsSync(file) ? readFileSync(file) : null;
+check(/YOLOX-nano/.test(spec.model) && spec.license === "Apache-2.0" && spec.input === 416,
+  `the page's /models/yolo11n_coco.espdl names YOLOX-nano, Apache-2.0, input 416: ${JSON.stringify(spec)}`);
+check(body !== null && file.startsWith(dir + path.sep), "the page carries the model in its own folder: " + spec.url);
+check(body !== null && body.length === spec.bytes && createHash("sha256").update(body).digest("hex") === spec.sha256,
+  "the model the page carries is the size and SHA-256 its note says");
 
 // A note for the stand-in, and a 200 x 100 picture, all red, as the camera
 // writes it (RGB565, little-endian).
 await py(`
 import json
 with open("/models/test_note.espdl", "w") as f:
-    json.dump({"url": "https://models.example/yolo11n.onnx", "bytes": ${MODEL.length}, "sha256": "${MODEL_SHA}", "input": ${SIZE}}, f)
+    json.dump({"url": "https://models.example/yolox_nano.onnx", "bytes": ${MODEL.length}, "sha256": "${MODEL_SHA}",
+               "input": ${SIZE}, "model": "YOLOX-nano", "license": "Apache-2.0"}, f)
 
 import espdl
 import image
@@ -123,10 +142,10 @@ fired_after = len(fired)
 provider = det.provider
 det.deinit()
 `);
-check(fetched.length === 1 && fetched[0][0] === "https://models.example/yolo11n.onnx" && fetched[0][1] === "cors",
+check(fetched.length === 1 && fetched[0][0] === "https://models.example/yolox_nano.onnx" && fetched[0][1] === "cors",
   "the model is fetched once, with CORS, from the note's address: " + JSON.stringify(fetched));
-check(notes.some((t) => /downloading its model/.test(t) && /models\.example/.test(t) && /100%/.test(t)),
-  "the page says on screen that it is downloading the model, and from where");
+check(notes.some((t) => /downloading its model, YOLOX-nano \(Apache-2\.0,/.test(t) && /models\.example/.test(t) && /100%/.test(t)),
+  "the page says on screen that it is downloading the model, its licence, and from where: " + notes[0]);
 check(note.hidden === true, "the note goes once the model is in");
 check(JSON.stringify(tried) === JSON.stringify(["webgl", "wasm"]), "with no WebGPU, WebGL then the CPU are tried: " + JSON.stringify(tried));
 check(mp.globals.get("provider") === "wasm", "the detector says where it runs: " + mp.globals.get("provider"));
@@ -137,10 +156,11 @@ check(mp.globals.get("fired_inside") === 0 && mp.globals.get("fired_after") === 
 const fed = inputs[inputs.length - 1];
 const plane = SIZE * SIZE;
 const at = (c, x, y) => fed.data[c * plane + y * SIZE + x];
-check(JSON.stringify(fed.dims) === JSON.stringify([1, 3, SIZE, SIZE]), "the model gets a 1 x 3 x 320 x 320 picture");
-check(at(0, 160, 160) === 1 && at(1, 160, 160) === 0 && at(2, 160, 160) === 0, "red RGB565 reaches it as red, 0 to 1");
-check(Math.abs(at(0, 160, 10) - 114 / 255) < 1e-6 && Math.abs(at(0, 160, 310) - 114 / 255) < 1e-6,
-  "the picture is letterboxed: grey above and below a wide one");
+check(JSON.stringify(fed.dims) === JSON.stringify([1, 3, SIZE, SIZE]), "the model gets a 1 x 3 x 416 x 416 picture");
+check(at(2, 100, 50) === 255 && at(1, 100, 50) === 0 && at(0, 100, 50) === 0,
+  "red RGB565 reaches it as BGR planes of 0 to 255: " + [at(0, 100, 50), at(1, 100, 50), at(2, 100, 50)]);
+check(at(0, 100, 10) === 0 && at(0, 100, 300) === 114 && at(2, 100, 300) === 114,
+  "the picture sits in the top left, grey (114) below a wide one");
 
 const got = JSON.parse(mp.globals.get("found"));
 check(got.length === 1, "one box: the overlap suppressed, the weak cup dropped: " + JSON.stringify(got));

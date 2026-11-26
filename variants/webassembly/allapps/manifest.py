@@ -115,8 +115,8 @@ for _name in sorted(_upstream):
 
 
 # What a board's vision module gives Object detection, for a browser: espdl's
-# YOLO11 on ONNX Runtime Web (the page's detect.mjs) and an image over a
-# buffer. Only this page has them.
+# YOLO11, here YOLOX-nano on ONNX Runtime Web (the page's detect.mjs), and an
+# image over a buffer. Only this page has them.
 freeze("vision", ("espdl.py", "image.py"), opt=3)
 
 include(os.path.join(_apps, "apps"))

@@ -46,7 +46,7 @@ build took about 4 minutes on 4 cores; a build from scratch after that took
 | `allapps.json` | The apps and omnipython commits it was built from, and the build's id. |
 | `manifest.webmanifest`, `icon.svg`, `icon-maskable.svg` | What makes the page an installable web app: its name, icons and window. |
 | `sw.js` | The service worker, which keeps the page and its runtime so it opens offline. The build writes its id into it. |
-| `detect.mjs`, `ort/` | Object detection: the page side of its `espdl`, and ONNX Runtime Web 1.31.1, which runs the model. |
+| `detect.mjs`, `ort/`, `models/` | Object detection: the page side of its `espdl`, ONNX Runtime Web 1.31.1, and the YOLOX-nano model it runs, with YOLOX's licence. |
 
 The page takes `?width=` and `?height=` to size the screen, and `?app=clock`
 to start in an app, as a restart into one does.
@@ -110,28 +110,23 @@ in without `castfast.py`, which it only imports where it's there.
 
 The Detect app runs in the page as it does on a board: `espdl` and `image`
 are frozen into the page as small Python modules over `detect.mjs`, which
-runs YOLO11n with [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/)
-on WebGPU, or WebGL, or the CPU, whichever works first. ONNX Runtime Web is
-in the page's `ort/` folder, taken from its npm package at the version
-`DEPENDENCIES.lock` pins, so nothing of it comes from elsewhere.
+runs [YOLOX-nano](https://github.com/Megvii-BaseDetection/YOLOX) with
+[ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/) on WebGPU, or
+WebGL, or the CPU, whichever works first. It knows the same 80 COCO classes
+as a board's YOLO11n and returns the same `(x, y, w, h, score, class)`
+tuples, though the boxes it finds may differ from a board's.
 
-The model is the one thing the page fetches. The page's
-`/models/yolo11n_coco.espdl`, where the app looks for its model, is a short
-note of where the ONNX model is, its size and its SHA-256. The first time
-the app opens, the page downloads it, with a bar along the top saying so,
-and the browser keeps it, so later opens don't download it again. The note
-names https://omnipython.org/models/yolo11n_coco_320.onnx unless you build
-with another address:
+Both ship in the page, so nothing comes from elsewhere. ONNX Runtime Web is
+in `ort/`, taken from its npm package at the version `DEPENDENCIES.lock`
+pins. The model is in `models/`: the ONNX file of the YOLOX release
+`DEPENDENCIES.lock` pins, 3.7 MB, with YOLOX's licence (Apache-2.0) beside
+it. The build checks both files' hashes.
 
-```bash
-./scripts/build_wasm_allapps.py --apps-ref main --omnipython-ref main --out site \
-    --detect-model-url http://localhost:8001/yolo11n_coco_320.onnx
-```
-
-Wherever it is, it must be the same file (the page checks its SHA-256), and
-a server on another origin must send `Access-Control-Allow-Origin`.
-[`scripts/export_yolo11n_onnx.py`](../../scripts/export_yolo11n_onnx.py)
-makes it from Ultralytics' weights, which are AGPL-3.0.
+The page's `/models/yolo11n_coco.espdl`, where the app looks for its model,
+is a short note of where the page's model is, its size, its SHA-256 and its
+licence. The model downloads only the first time the app opens, with a bar
+along the top saying so, and the browser keeps it, so later opens don't
+download it again.
 
 ## How it differs from the shared browser build
 

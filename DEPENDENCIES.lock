@@ -48,10 +48,15 @@ omnipython-lib    https://github.com/PyDevices/omnipython.git          c97d8eae4
 # modules/vision/esp-vision-patches changes py_espdl.cpp in a build-tree copy,
 # never here.
 esp-vision        https://github.com/espressif/esp-vision.git         ecda8004b95e1df275ac2a1f9cdf487d03defc63
-# ONNX Runtime Web (MIT): the all-apps page's Object detection runs YOLO11n
+# ONNX Runtime Web (MIT): the all-apps page's Object detection runs YOLOX-nano
 # with it. scripts/build_wasm_allapps.py takes its page files from this npm
 # package, checks the registry's SHA-512, and ships them in the page's ort/.
 onnxruntime-web   https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.31.1.tgz 1.31.1
+# YOLOX-nano (Megvii, Apache-2.0): the all-apps page's object detector, the
+# ONNX file of YOLOX's 0.1.1rc0 release (tag at e1052df7). The page carries it
+# in models/, with YOLOX's licence; scripts/build_wasm_allapps.py checks its
+# SHA-256.
+yolox-nano        https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx 0.1.1rc0
 
 # Toolchains. A build fetches and checks only the one its port uses: esp-idf
 # for esp32, emsdk for webassembly, SDL2 for windows when displayif is

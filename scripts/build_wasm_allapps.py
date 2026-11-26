@@ -13,7 +13,8 @@ name (a branch, a tag or a full commit), builds the webassembly port's
 can serve as it is: ``index.html``, ``micropython.mjs``, ``micropython.wasm``,
 ``micropython.wasm.provenance``, ``allapps.json``, which records the commits
 that went in, the web app's manifest, icons and service worker, and
-``detect.mjs`` with ONNX Runtime Web in ``ort/``, which run Object detection.
+``detect.mjs`` with ONNX Runtime Web in ``ort/`` and YOLOX-nano in ``models/``,
+which run Object detection.
 ``--apps`` and ``--omnipython`` take local checkouts
 instead of refs, to try a change before it's pushed.
 
@@ -48,22 +49,28 @@ BUILD = REPO / "builds" / "webassembly" / VARIANT
 # out, as the shared browser build has.
 MODULES = "all,pdwidgets"
 RUNTIME = ("micropython.mjs", "micropython.wasm")
-# Object detection: the page's espdl runs YOLO11n with ONNX Runtime Web, which
+# Object detection: the page's espdl runs YOLOX-nano with ONNX Runtime Web, which
 # ships in the page's ort/ folder at the version DEPENDENCIES.lock pins; these
 # are the files of its npm package that run it on WebGPU, WebGL and the CPU.
 # The npm registry's SHA-512 of that package, checked before anything is used.
 ORT = "onnxruntime-web"
 ORT_SHA512 = "5GeH+bWQ+HxM10z7erGlsWqryrwMbSvm/1tkIsKTT48g0fI19VXVVC435t4t7VsPdSQeS7NmuZPXrQ73k82URw=="
 ORT_FILES = ("ort.all.min.mjs", "ort-wasm-simd-threaded.jsep.mjs", "ort-wasm-simd-threaded.jsep.wasm")
-# The model doesn't ship with the page: /models/yolo11n_coco.espdl, where
-# Object detection looks for it, is a note of where to fetch it on first use,
-# with its size and SHA-256. These are the ONNX YOLO11n's, exported at a
-# 320 x 320 input by scripts/export_yolo11n_onnx.py (Ultralytics 8.4.219).
+# The model is Megvii's YOLOX-nano (Apache-2.0), the ONNX file of the YOLOX
+# release DEPENDENCIES.lock pins, with its SHA-256 here. It ships in the
+# page's models/ folder with YOLOX's licence beside it, and is fetched from
+# there only when Object detection first opens. /models/yolo11n_coco.espdl,
+# where the Detect app looks for its model, is a note of where that is.
+DETECT = "yolox-nano"
 DETECT_MODEL = "yolo11n_coco.espdl"
-DETECT_URL = "https://omnipython.org/models/yolo11n_coco_320.onnx"
-DETECT_BYTES = 10615288
-DETECT_SHA256 = "fec7ab1ea72e967ac7f4a2b5cc74f6f154d6c1ff00ca597c0c9eabd06a3000ad"
-DETECT_INPUT = 320
+DETECT_FILE = "models/yolox_nano.onnx"
+DETECT_SHA256 = "c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d"
+DETECT_INPUT = 416
+# YOLOX's licence at the commit of the pinned release's tag.
+DETECT_LICENSE = "models/LICENSE-yolox.txt"
+DETECT_LICENSE_URL = ("https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/"
+                      "e1052df71842031413f6030723c3607b839c80ce/LICENSE")
+DETECT_LICENSE_SHA256 = "577c03d505ec80f667ebf96ebd0cc4f6825c817ca1088ee348c48aaabd51bd92"
 
 
 def say(text):
@@ -122,18 +129,45 @@ def fetch_ort(dest, work):
     return version
 
 
-def detect_note(url):
-    """The page's /models/yolo11n_coco.espdl: where Object detection fetches its model."""
-    return json.dumps({"url": url, "bytes": DETECT_BYTES, "sha256": DETECT_SHA256, "input": DETECT_INPUT,
-                       "model": "YOLO11n, COCO, ONNX"}, indent=1) + "\n"
+def fetch_checked(url, sha256, cache):
+    """*url*'s bytes, kept in *cache*, if their SHA-256 is *sha256*."""
+    if not cache.is_file():
+        say("fetching %s" % url)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=120) as r:
+            cache.write_bytes(r.read())
+    data = cache.read_bytes()
+    got = hashlib.sha256(data).hexdigest()
+    if got != sha256:
+        cache.unlink()
+        die("%s is not the file this build expects (sha256 %s, not %s)" % (url, got, sha256))
+    return data
 
 
-def page_models(dest, detect_url):
+def fetch_model(work):
+    """YOLOX-nano's ONNX file and YOLOX's licence, from the pinned release,
+    checked. Returns (model bytes, licence bytes, the pin)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import pins
+
+    pin = pins.get(DETECT, REPO)
+    model = fetch_checked(pin.url, DETECT_SHA256, work / ("%s-%s.onnx" % (DETECT, pin.ref)))
+    licence = fetch_checked(DETECT_LICENSE_URL, DETECT_LICENSE_SHA256, work / "LICENSE-yolox.txt")
+    return model, licence, pin
+
+
+def detect_note(size):
+    """The page's /models/yolo11n_coco.espdl: where Object detection finds its model."""
+    return json.dumps({"url": DETECT_FILE, "bytes": size, "sha256": DETECT_SHA256, "input": DETECT_INPUT,
+                       "model": "YOLOX-nano", "license": "Apache-2.0"}, indent=1) + "\n"
+
+
+def page_models(dest, size):
     """The folder the page carries as /models, in *dest*, made again each time."""
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    (dest / DETECT_MODEL).write_text(detect_note(detect_url))
+    (dest / DETECT_MODEL).write_text(detect_note(size))
     return dest
 
 
@@ -155,8 +189,6 @@ def main():
     ap.add_argument("--work", type=Path, default=REPO / "deps" / "allapps",
                     help="where fetched checkouts go (default: deps/allapps)")
     ap.add_argument("--clean", action="store_true", help="build from scratch, not on the last build's objects")
-    ap.add_argument("--detect-model-url", default=DETECT_URL,
-                    help="where Object detection fetches its ONNX model on first use (default: %(default)s)")
     args = ap.parse_args()
 
     work = args.work.resolve()
@@ -182,7 +214,8 @@ def main():
            "--library-source", "applibs=%s" % apps_dir]
     if args.clean:
         cmd.append("--clean")
-    models = page_models(work / "models" / "page", args.detect_model_url)
+    model, licence, model_pin = fetch_model(work)
+    models = page_models(work / "models" / "page", len(model))
     env = dict(os.environ, OMNIPYTHON_APPS=str(apps_dir), OMNIPYTHON_MODELS=str(models))
     say("building: " + " ".join(cmd))
     if subprocess.run(cmd, cwd=REPO, env=env).returncode != 0:
@@ -207,13 +240,17 @@ def main():
     sw = out / "sw.js"
     sw.write_text(sw.read_text().replace("__BUILD__", build_id))
     ort_version = fetch_ort(out, work)
+    (out / DETECT_FILE).parent.mkdir()
+    (out / DETECT_FILE).write_bytes(model)
+    (out / DETECT_LICENSE).write_bytes(licence)
     # In a container the checkout may belong to another user, and git won't
     # read it; CI says its commit in GITHUB_SHA.
     r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
     builds = {"commit": r.stdout.strip() if r.returncode == 0 else os.environ.get("GITHUB_SHA")}
     record = {"apps": apps_rec, "omnipython": omni_rec, "omnipython-builds": builds,
               "variant": VARIANT, "modules": MODULES, "build": build_id,
-              "onnxruntime-web": ort_version, "detect_model": args.detect_model_url,
+              "onnxruntime-web": ort_version,
+              "detect_model": {"url": model_pin.url, "release": model_pin.ref, "sha256": DETECT_SHA256},
               "bytes": {name: (out / name).stat().st_size for name in RUNTIME}}
     (out / "allapps.json").write_text(json.dumps(record, indent=1) + "\n")
     wasm_mb = record["bytes"]["micropython.wasm"] / 1e6
