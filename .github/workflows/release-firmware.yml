@@ -33,7 +33,7 @@ on:
         default: false
         type: boolean
       pico2:
-        description: Build the Raspberry Pi Pico 2 and the Pimoroni Pico Plus 2 W too (off until a board is on the bench)
+        description: Build the Raspberry Pi Pico 2 too (off until a board runs it)
         default: false
         type: boolean
       omnipython-lvgl-ref:
@@ -149,13 +149,20 @@ jobs:
         if: matrix.deps != 'none'
         run: echo "version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" >> "$GITHUB_OUTPUT"
 
+      # An ESP32-S31 cell's ESP-IDF 6.1 is pinned by the S31 lines.
       - name: The toolchain pins, which the cached deps/ is tied to
         id: toolchains
         if: matrix.deps != 'none'
-        run: echo "key=$(python3 scripts/pins.py --key toolchains)" >> "$GITHUB_OUTPUT"
+        env:
+          DEPS: ${{ matrix.deps }}
+        run: |
+          key=$(python3 scripts/pins.py --key toolchains)
+          if [[ "$DEPS" == idf6 ]]; then key="$key-$(python3 scripts/pins.py --key s31)"; fi
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
-      # ESP-IDF v5.5.4 (MicroPython) or CircuitPython's tree with its own
-      # ESP-IDF (CircuitPython), and the compilers they download.
+      # ESP-IDF v5.5.4 (MicroPython), ESP-IDF 6.1 (MicroPython on the ESP32-S31)
+      # or CircuitPython's tree with its own ESP-IDF (CircuitPython), and the
+      # compilers they download.
       - name: Cache the toolchains
         id: deps
         if: matrix.deps != 'none'
@@ -163,6 +170,7 @@ jobs:
         with:
           path: |
             deps/esp-idf
+            deps/esp-idf6
             deps/circuitpython
             deps/circuitpython-venv
             ~/.espressif
@@ -245,9 +253,10 @@ jobs:
           esptool = sys.argv[1]
           doc = json.load(open("firmware/firmware.json"))
           bad = 0
-          bootloader = {"esp32s3": 0, "esp32p4": 0x2000}
+          sys.path.insert(0, "scripts")
+          from release_firmware import BOOTLOADER as bootloader
           for b in doc["builds"]:
-              if b["chip"] not in ("esp32p4", "esp32s3"):
+              if b["chip"] not in bootloader:
                   continue
               for f in b["files"]:
                   if f["role"] not in ("flash", "app"):

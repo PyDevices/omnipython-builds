@@ -106,20 +106,36 @@ def fake_set(root, pico2=False):
 
 
 class Table(unittest.TestCase):
-    def test_seventeen_cells_by_default_and_the_pico2_only_when_asked(self):
-        self.assertEqual(len(rf.matrix(False)["include"]), 17)
+    def test_twenty_eight_cells_by_default_and_the_pico2_only_when_asked(self):
+        self.assertEqual(len(rf.matrix(False)["include"]), 28)
         ids = [c["id"] for c in rf.matrix(True)["include"]]
-        self.assertEqual(len(ids), 19)
+        self.assertEqual(len(ids), 29)
         self.assertIn("mp-pico2", ids)
-        self.assertIn("mp-pico-plus2-w", ids)
         self.assertNotIn("mp-pico2", [c["id"] for c in rf.matrix(False)["include"]])
-        self.assertNotIn("mp-pico-plus2-w", [c["id"] for c in rf.matrix(False)["include"]])
+        self.assertIn("mp-pico-plus2-w", [c["id"] for c in rf.matrix(False)["include"]])
         self.assertEqual(len(set(ids)), len(ids))
 
-    def test_ten_micropython_and_seven_circuitpython(self):
+    def test_twenty_one_micropython_and_seven_circuitpython(self):
         rows = rf.wanted(False)
-        self.assertEqual(sum(c["interpreter"] == "micropython" for c in rows), 10)
+        self.assertEqual(sum(c["interpreter"] == "micropython" for c in rows), 21)
         self.assertEqual(sum(c["interpreter"] == "circuitpython" for c in rows), 7)
+
+    def test_no_two_cells_name_their_files_alike(self):
+        rf.check_cells()
+        cells = [dict(c, stem=None) if c["id"] == "mp-s3-16mb" else c for c in rf.CELLS]
+        with mock.patch.object(rf, "CELLS", cells):
+            with self.assertRaisesRegex(rf.Failed, "mp-s3: its files would have the names of mp-s3-16mb's"):
+                rf.check_cells()
+
+    def test_each_chip_flashes_from_its_bootloader(self):
+        offsets = {c["id"]: c["offset"] for c in rf.CELLS}
+        self.assertEqual(offsets["mp-esp32-pico"], 0x1000)
+        self.assertEqual(offsets["mp-esp32-audiokit"], 0x1000)
+        self.assertEqual(offsets["mp-xiao-c5"], 0x2000)
+        self.assertEqual(offsets["mp-s31-box"], 0x2000)
+        for c in rf.CELLS:
+            if c["interpreter"] == "micropython" and c["kind"] == "esp32":
+                self.assertEqual(c["offset"], rf.BOOTLOADER[c["chip"]], c["id"])
 
     def test_the_generic_s3_cells_fit_the_boards_they_name(self):
         by = {c["id"]: c for c in rf.CELLS}
@@ -127,13 +143,18 @@ class Table(unittest.TestCase):
         self.assertEqual((by["mp-s3"]["variant"], by["mp-s3"]["flash"]), (None, "8MB"))
         self.assertEqual((by["mp-s3-8mb"]["variant"], by["mp-s3-8mb"]["flash"]), ("NO_PSRAM", "8MB"))
         self.assertEqual(by["cp-s3-qualia"]["board"], "adafruit_qualia_s3_rgb666_single_app")
-        for cid, board in (("mp-s3-octal", "Qualia"), ("mp-s3", "QT Py"), ("mp-s3-8mb", "QT Py"), ("cp-s3-qualia", "Qualia")):
+        self.assertEqual((by["mp-s3-16mb"]["variant"], by["mp-s3-16mb"]["flash"]), (None, "16MB"))
+        for cid, board in (("mp-s3-octal", "Qualia"), ("mp-s3", "QT Py"), ("mp-s3-8mb", "QT Py"), ("cp-s3-qualia", "Qualia"),
+                           ("mp-s3-16mb", "WT32-SC01 Plus")):
             self.assertIn(board, by[cid]["label"])
 
-    def test_no_cell_builds_picotts(self):
-        # picotts is opt-in: `all` leaves it out, so a cell gets it only by naming it.
+    def test_every_esp32_cell_with_16_mb_or_more_builds_the_full_list(self):
+        # picotts and the rest are opt-in: `all` leaves them out, so a cell gets them only by naming them.
         for c in rf.CELLS:
-            self.assertNotIn("picotts", c["modules"].split(","), c["id"])
+            big = c["interpreter"] == "micropython" and c["kind"] == "esp32" and int(c["flash"][:-2]) >= 16
+            self.assertEqual(c["modules"] == rf.FULL, big, c["id"])
+            if not big:
+                self.assertNotIn("picotts", c["modules"].split(","), c["id"])
 
     def test_every_cell_names_its_files(self):
         for c in rf.CELLS:
@@ -146,16 +167,34 @@ class Table(unittest.TestCase):
         self.assertEqual(args[args.index("--variant") + 1], "LCD_7")
         self.assertEqual(args[args.index("--modules") + 1], "all")
 
-    def test_the_p4_cells_carry_the_opt_in_ml_modules(self):
-        for cell_id in ("mp-p4-devkit", "mp-p4-panel", "mp-p4-eye"):
+    def test_the_p4_and_s31_cells_carry_the_opt_in_modules(self):
+        for cell_id in ("mp-p4-devkit", "mp-p4-panel", "mp-p4-eye", "mp-s31-box", "mp-s31-zero"):
             args = rf.build_args(rf.cell(cell_id))
-            self.assertEqual(args[args.index("--modules") + 1], "all,vision,tflite", cell_id)
+            self.assertEqual(args[args.index("--modules") + 1].split(","),
+                             ["all", "btclassic", "openthread", "tflite", "vision", "picotts", "pdwidgets"], cell_id)
+
+    def test_the_audio_kit_keeps_its_board_table(self):
+        args = rf.build_args(rf.cell("mp-esp32-audiokit"))
+        self.assertIn("--no-autosize", args)
+        self.assertNotIn("--keep-fs", args)
+        self.assertEqual((args[args.index("--variant") + 1], args[args.index("--flash") + 1]), ("AUDIO_KIT", "4MB"))
+        for c in rf.CELLS:
+            if not c.get("board_table"):
+                self.assertNotIn("--no-autosize", rf.build_args(c), c["id"])
+
+    def test_board_table_on_a_cell_that_also_autosizes_is_caught(self):
+        cells = [dict(c, autosize=True) if c["id"] == "mp-esp32-audiokit" else c for c in rf.CELLS]
+        with mock.patch.object(rf, "CELLS", cells):
+            with self.assertRaisesRegex(rf.Failed, "mp-esp32-audiokit: board_table is for"):
+                rf.check_cells()
 
     def test_every_micropython_esp32_and_rp2_cell_keeps_its_filesystem(self):
         rf.check_cells()
         kept = [c["id"] for c in rf.CELLS if c.get("fs")]
-        self.assertEqual(len(kept), 5)
-        self.assertEqual([c["id"] for c in rf.CELLS if c.get("autosize")], ["mp-s3-lcd7", "mp-s3-lcd43", "mp-s3-octal", "mp-s3", "mp-s3-8mb", "mp-s3-tembed"])
+        self.assertEqual(len(kept), 9)
+        self.assertEqual([c["id"] for c in rf.CELLS if c.get("autosize")],
+                         ["mp-s31-box", "mp-s31-zero", "mp-s3-lcd7", "mp-s3-lcd43", "mp-s3-octal", "mp-s3-16mb", "mp-s3",
+                          "mp-s3-8mb", "mp-s3-tembed", "mp-xiao-c5", "mp-esp32-pico"])
         for c in rf.CELLS:
             args = rf.build_args(c)
             if c.get("fs"):
@@ -244,7 +283,7 @@ class Assemble(unittest.TestCase):
 
     def test_a_good_set_assembles(self):
         doc = self.run_assemble()
-        self.assertEqual(len(doc["builds"]), 17)
+        self.assertEqual(len(doc["builds"]), 28)
         self.assertTrue((self.out / "firmware.json").is_file())
         names = {f["name"] for b in doc["builds"] for f in b["files"]}
         for name in names:
@@ -470,8 +509,10 @@ class Assemble(unittest.TestCase):
         fs = {b["id"]: (b.get("fs_offset"), b.get("fs_bytes")) for b in doc["builds"]}
         self.assertEqual(fs["mp-s3-lcd7"], ("0x570000", AUTOSIZED_FS))
         self.assertEqual(fs["mp-s3-lcd43"], ("0x570000", AUTOSIZED_FS))
-        self.assertEqual(fs["mp-p4-panel"], ("0x930000", 23360 * 1024))
-        self.assertEqual(fs["mp-p4-eye"], ("0x930000", 6976 * 1024))
+        self.assertEqual(fs["mp-p4-panel"], ("0x9c0000", 22784 * 1024))
+        self.assertEqual(fs["mp-p4-eye"], ("0x9c0000", 6400 * 1024))
+        self.assertEqual(fs["mp-esp32-audiokit"], ("0x170000", AUTOSIZED_FS))
+        self.assertEqual(fs["mp-pico"], (hex(2048 * 1024 - 320 * 1024), 320 * 1024))
         self.assertEqual(fs["cp-s3-lcd7"], (None, None))
 
     def rewrite(self, cell_id, role, data):
@@ -495,7 +536,7 @@ class Assemble(unittest.TestCase):
         self.rewrite("mp-p4-panel", "partitions", table_bin([
             ("nvs", 1, 2, 0x9000, 0x6000), ("phy_init", 1, 1, 0xF000, 0x1000),
             ("factory", 0, 0, 0x10000, 0x930000), ("coredump", 1, 3, 0x940000, 0x10000)]))
-        self.fails_with("mp-p4-panel: the filesystem is 23232 KB at 0x950000, not the 23360K at 0x930000")
+        self.fails_with("mp-p4-panel: the filesystem is 23232 KB at 0x950000, not the 22784K at 0x9c0000")
 
     def test_a_named_filesystem_in_the_wrong_place_is_caught(self):
         self.rewrite("mp-p4-devkit", "partitions", table_bin([
@@ -507,8 +548,8 @@ class Assemble(unittest.TestCase):
         d = self.indir / "mp-p4-panel"
         meta = json.loads((d / "cell.json").read_text())
         flash = (d / meta["files"]["flash"]["file"]).read_bytes()
-        self.rewrite("mp-p4-panel", "flash", flash + b"\xff" * (0x930000 - len(flash) + 1))
-        self.fails_with("mp-p4-panel: flash.bin writes past 0x930000, into the filesystem")
+        self.rewrite("mp-p4-panel", "flash", flash + b"\xff" * (0x9c0000 - len(flash) + 1))
+        self.fails_with("mp-p4-panel: flash.bin writes past 0x9c0000, into the filesystem")
 
     def pico2_set(self):
         for c in rf.wanted(True):
@@ -678,7 +719,7 @@ class DraftRelease(unittest.TestCase):
         text = rf.notes(self.doc)
         self.assertIn("| ESP32-S3-Touch-LCD-7 | MicroPython v1.30.0-preview | ", text)
         self.assertIn(" | 2,624 KB at 0x570000 |", text)
-        self.assertIn(" | 23,360 KB at 0x930000 |", text)
+        self.assertIn(" | 22,784 KB at 0x9c0000 |", text)
         self.assertNotIn("This release moves the filesystem", text)
 
     def test_a_release_that_moves_a_filesystem_says_which_board(self):
@@ -721,7 +762,7 @@ class DraftRelease(unittest.TestCase):
         p.write_text(json.dumps(previous))
         out = self.root / "notes.md"
         self.assertEqual(rf.main(["notes", str(j), "--previous", str(p), "--out", str(out)]), 0)
-        self.assertIn("- ESP32-P4-WIFI6-Touch-LCD-4B (P4 before revision 3), MicroPython: 23,360 KB at 0x930000, was 0 KB at 0x930000",
+        self.assertIn("- ESP32-P4-WIFI6-Touch-LCD-4B (P4 before revision 3), MicroPython: 22,784 KB at 0x9c0000, was 0 KB at 0x9c0000",
                       out.read_text())
 
     def test_a_final_set_has_no_staged_banner(self):
